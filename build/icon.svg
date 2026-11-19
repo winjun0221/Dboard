@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- DBoard 앱 아이콘: 둥근 사각형 + DB 원통 + 결과 표 (scripts/make-icon.mjs가 build/icon.png로 그림) -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12b3a8"/>
+      <stop offset="1" stop-color="#2f6bff"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="can" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dfe9ff"/>
+    </linearGradient>
+    <clipPath id="body"><path d="M196 292 V672 A236 84 0 0 0 668 672 V292 Z"/></clipPath>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#shine)"/>
+  <!-- DB 원통 -->
+  <path d="M196 292 V672 A236 84 0 0 0 668 672 V292 Z" fill="url(#can)"/>
+  <ellipse cx="432" cy="292" rx="236" ry="84" fill="#ffffff"/>
+  <ellipse cx="432" cy="292" rx="236" ry="84" fill="none" stroke="#2f6bff" stroke-opacity="0.18" stroke-width="10"/>
+  <g fill="none" stroke="#2f6bff" stroke-opacity="0.3" stroke-width="22" clip-path="url(#body)">
+    <path d="M196 420 A236 84 0 0 0 668 420"/>
+    <path d="M196 548 A236 84 0 0 0 668 548"/>
+  </g>
+  <!-- 결과 표 -->
+  <rect x="540" y="540" width="330" height="270" rx="52" fill="#0d1b3d"/>
+  <rect x="540" y="540" width="330" height="82" rx="52" fill="#3d7bff"/>
+  <rect x="540" y="590" width="330" height="32" fill="#3d7bff"/>
+  <g stroke="#ffffff" stroke-opacity="0.85" stroke-width="16" stroke-linecap="round">
+    <line x1="592" y1="676" x2="818" y2="676"/>
+    <line x1="592" y1="738" x2="760" y2="738"/>
+  </g>
+</svg>

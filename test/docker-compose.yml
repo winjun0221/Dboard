@@ -1,0 +1,53 @@
+# 시험용 DB 서버 (이 PC 안에서만: 127.0.0.1에만 열림). 비밀번호는 시험 전용 값이다.
+# 사용: npm run test:db   (올리기 → 테스트 → 그대로 둠, 끄려면 docker compose -f test/docker-compose.yml down)
+name: dboard-test
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: dboard_test
+      MYSQL_DATABASE: dboard_test
+    ports: ["127.0.0.1:33061:3306"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pdboard_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: dboard_test
+      MARIADB_DATABASE: dboard_test
+    ports: ["127.0.0.1:33062:3306"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: dboard_test
+      POSTGRES_DB: dboard_test
+    ports: ["127.0.0.1:54321:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Dboard_test1!"
+      MSSQL_PID: Developer
+    ports: ["127.0.0.1:14331:1433"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Dboard_test1!' -C -Q 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+  # SSH 터널 시험: 이 서버를 거쳐 postgres(같은 Docker 망 안의 이름)로 붙는다
+  sshd:
+    build: ./sshd
+    ports: ["127.0.0.1:22221:22"]
