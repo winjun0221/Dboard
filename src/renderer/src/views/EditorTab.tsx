@@ -14,7 +14,7 @@ import { SqlEditor, type SqlEditorHandle } from '../components/SqlEditor'
 import { ResultView } from '../components/ResultView'
 import { Splitter, usePaneSize, clamp } from '../components/Splitter'
 import { DriverBadge } from '../components/DriverBadge'
-import { registerEditor } from '../editors'
+import { registerActions, registerEditor, type EditorActions } from '../editors'
 
 interface RunItem {
   sql: string
@@ -50,6 +50,19 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
   useEffect(() => {
     registerEditor(tab.id, ed.current)
     return () => registerEditor(tab.id, null)
+  }, [tab.id])
+
+  // 제목 줄 SQL 메뉴에서 실행·취소 (그때그때 최신 함수로)
+  const actions = useRef<EditorActions | null>(null)
+  useEffect(() => {
+    registerActions(tab.id, {
+      run: (mode) => actions.current?.run(mode),
+      cancel: () => actions.current?.cancel(),
+      get running() {
+        return actions.current?.running ?? false
+      },
+    })
+    return () => registerActions(tab.id, null)
   }, [tab.id])
 
   // 실행 중 걸린 시간 표시
@@ -166,6 +179,8 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
     void ws.ensureConnected(id)
   }
 
+  actions.current = { run: (mode) => void run(mode), cancel: () => void cancel(), running }
+
   const dbList = dbs.data?.databases ?? []
   const resultTabs = runs.map((r, i) => ({ r, i })).filter((x) => x.r.result?.columns)
   const elapsed = running ? performance.now() - started : runs.reduce((n, r) => n + r.ms, 0)
@@ -173,9 +188,22 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
 
   return (
     <div className="editor-tab">
-      <div className="editor-bar">
+      <div className="editor-bar toolbar">
+        <button className="tbtn run" onClick={() => void run('current')} disabled={running} title={t('고른 부분, 없으면 커서가 있는 문장 (Ctrl+Enter)')}>
+          <Play />{t('실행')}<kbd>Ctrl+Enter</kbd>
+        </button>
+        <button className="tbtn run" onClick={() => void run('script')} disabled={running} title={t('전체를 문장마다 차례로 (Alt+X)')}>
+          <PlaySquare />{t('스크립트 실행')}<kbd>Alt+X</kbd>
+        </button>
+        <button className="tbtn stop" onClick={() => void cancel()} disabled={!running} title={t('실행 중인 문장 취소')}>
+          <Square />{t('취소')}
+        </button>
+        <span className="bar-sep" />
+        <button className="tbtn icon" title={t('실행 기록')} onClick={() => ws.setPanel('history')}><History /></button>
+        {running && <span className="busy"><LoaderCircle className="spin" />{t('실행 중… {time}', { time: formatMs(elapsed) })}</span>}
+        <span className="spacer" />
         <label className="ctx-pick" title={t('연결')}>
-          <DriverBadge driver={driver} size={16} />
+          <DriverBadge driver={driver} size={14} />
           <select value={tab.connId} onChange={(e) => switchConn(e.target.value)}>
             {ws.connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -199,19 +227,6 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
             </select>
           </label>
         )}
-        <span className="bar-sep" />
-        <button className="btn primary small" onClick={() => void run('current')} disabled={running} title={t('고른 부분, 없으면 커서가 있는 문장 (Ctrl+Enter)')}>
-          <Play />{t('실행')}<kbd>Ctrl+Enter</kbd>
-        </button>
-        <button className="btn small" onClick={() => void run('script')} disabled={running} title={t('전체를 문장마다 차례로 (Alt+X)')}>
-          <PlaySquare />{t('스크립트 실행')}<kbd>Alt+X</kbd>
-        </button>
-        <button className="btn small" onClick={() => void cancel()} disabled={!running} title={t('실행 중인 문장 취소')}>
-          <Square />{t('취소')}
-        </button>
-        <span className="spacer" />
-        {running && <span className="busy"><LoaderCircle className="spin" />{t('실행 중… {time}', { time: formatMs(elapsed) })}</span>}
-        <button className="icon-btn" title={t('실행 기록')} onClick={() => ws.setPanel('history')}><History /></button>
       </div>
       <div className="editor-split" ref={split}>
         <div className="editor-host" style={{ height: editorH }}>

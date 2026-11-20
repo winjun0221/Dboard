@@ -276,7 +276,7 @@ export function DataView({ tabId, connId, target, objKind, active }: { tabId: st
 
   return (
     <div className="data-view">
-      <div className="data-bar">
+      <div className="data-bar toolbar">
         <div className="filter-box">
           <Filter />
           <span className="kw">WHERE</span>
@@ -290,24 +290,24 @@ export function DataView({ tabId, connId, target, objKind, active }: { tabId: st
           />
           {filter && <button className="icon-btn small" title={t('조건 지우기')} onClick={() => applyFilter('')}><X /></button>}
         </div>
-        <button className="icon-btn" title={t('새로고침')} onClick={() => void reload()}><RefreshCw className={loading ? 'spin' : ''} /></button>
+        <button className="tbtn icon" title={t('새로고침')} onClick={() => void reload()}><RefreshCw className={loading ? 'spin' : ''} /></button>
         <span className="bar-sep" />
         {readOnly ? (
           <span className="chip"><Lock />{t('뷰는 읽기 전용')}</span>
         ) : (
           <>
-            <button className="btn small" onClick={addRow} disabled={!data}><Plus />{t('행 추가')}</button>
-            <button className="btn small" onClick={() => { const s = grid.current?.selection(); if (s) deleteRows(rowsOf(s)) }} disabled={!data}><Trash2 />{t('행 삭제')}</button>
-            <button className="btn small" onClick={doUndo} disabled={!undo.length} title={t('마지막 변경 되돌리기 (Ctrl+Z)')}><Undo2 />{t('되돌리기')}</button>
-            <button className="btn small" onClick={() => change(() => EMPTY)} disabled={!changes} title={t('저장하지 않은 변경을 모두 버리기')}><Eraser />{t('모두 되돌리기')}</button>
-            <button className={`btn small ${changes ? 'primary' : ''}`} onClick={save} disabled={!changes} title={t('실행할 SQL을 미리 보고 저장 (Ctrl+S)')}>
+            <button className="tbtn" onClick={addRow} disabled={!data}><Plus />{t('행 추가')}</button>
+            <button className="tbtn" onClick={() => { const s = grid.current?.selection(); if (s) deleteRows(rowsOf(s)) }} disabled={!data}><Trash2 />{t('행 삭제')}</button>
+            <button className="tbtn" onClick={doUndo} disabled={!undo.length} title={t('마지막 변경 되돌리기 (Ctrl+Z)')}><Undo2 />{t('되돌리기')}</button>
+            <button className="tbtn" onClick={() => change(() => EMPTY)} disabled={!changes} title={t('저장하지 않은 변경을 모두 버리기')}><Eraser />{t('모두 되돌리기')}</button>
+            <button className={`tbtn ${changes ? 'primary' : ''}`} onClick={save} disabled={!changes} title={t('실행할 SQL을 미리 보고 저장 (Ctrl+S)')}>
               <Save />{changes ? t('저장 ({n})', { n: changes }) : t('저장')}
             </button>
           </>
         )}
         <span className="spacer" />
-        <button className="btn small" onClick={doExport} disabled={!data}><Download />{t('CSV')}</button>
-        {!readOnly && <button className="btn small" onClick={doImport}><Upload />{t('가져오기')}</button>}
+        <button className="tbtn" onClick={doExport} disabled={!data}><Download />{t('CSV')}</button>
+        {!readOnly && <button className="tbtn" onClick={doImport}><Upload />{t('가져오기')}</button>}
       </div>
       {keyKind === 'all' && !readOnly && <div className="banner warn"><KeyRound />{t('기본 키가 없는 표예요. 고치거나 지울 때 모든 열 값이 같은 행 하나를 찾아요.')}</div>}
       {error && <div className="banner error">{error}</div>}

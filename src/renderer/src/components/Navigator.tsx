@@ -1,7 +1,7 @@
 // 왼쪽 탐색기: 접속 → DB → (스키마) → 표·뷰 묶음 → 표 → 열·인덱스. 펼칠 때 읽고, 새로고침 전까지 기억
 import { useState, type MouseEvent, type ReactNode } from 'react'
 import {
-  ChevronRight, Columns3, Copy, Database, Eye, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, Plug, Plus,
+  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, Eye, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, Plug, Plus,
   RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -24,15 +24,25 @@ function loadExpanded(): Set<string> {
   }
 }
 
+/** 고른 줄이 가리키는 것 (위 도구 줄 단추가 쓴다) */
+interface SelMeta {
+  connId: string
+  db?: string
+  schema?: string
+  table?: string
+  kind?: ObjectKind
+}
+
 interface TreeCtx {
   expanded: Set<string>
   toggle(key: string, open?: boolean): void
   selected: string | null
-  select(key: string): void
+  select(key: string, meta?: SelMeta): void
   filter: string
 }
 
-function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, onMenu, onDouble, title, className, open: openProp, onToggle }: {
+function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, onMenu, onDouble, title, className, open: openProp, onToggle, meta }: {
+  meta?: SelMeta
   /** 펼침 상태를 바깥에서 정할 때 (처음부터 펼친 묶음) */
   open?: boolean
   onToggle?: () => void
@@ -54,14 +64,14 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
   return (
     <div
       className={`tree-row ${ctx.selected === k ? 'sel' : ''} ${className ?? ''}`}
-      style={{ paddingLeft: 6 + depth * 14 }}
+      style={{ paddingLeft: 4 + depth * 16 }}
       role="treeitem"
       aria-expanded={expandable ? open : undefined}
       aria-selected={ctx.selected === k}
       data-key={k}
       title={title}
       onClick={() => {
-        ctx.select(k)
+        ctx.select(k, meta)
         if (expandable) {
           if (onToggle) onToggle()
           else ctx.toggle(k)
@@ -70,7 +80,7 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
       }}
       onDoubleClick={onDouble}
       onContextMenu={(e) => {
-        ctx.select(k)
+        ctx.select(k, meta)
         onMenu?.(e)
       }}
     >
@@ -83,17 +93,26 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
 }
 
 function Empty({ depth, children }: { depth: number; children: ReactNode }) {
-  return <div className="tree-empty" style={{ paddingLeft: 26 + depth * 14 }}>{children}</div>
+  return <div className="tree-empty" style={{ paddingLeft: 24 + depth * 16 }}>{children}</div>
 }
 
 function ErrorRow({ depth, error }: { depth: number; error: unknown }) {
-  return <div className="tree-empty error" style={{ paddingLeft: 26 + depth * 14 }} title={errorText(error)}>{errorText(error)}</div>
+  return <div className="tree-empty error" style={{ paddingLeft: 24 + depth * 16 }} title={errorText(error)}>{errorText(error)}</div>
+}
+
+function saveExpanded(n: Set<string>) {
+  try {
+    localStorage.setItem(EXPAND_KEY, JSON.stringify([...n].slice(-500)))
+  } catch {
+    // 무시
+  }
 }
 
 export function Navigator() {
   const ws = useWs()
+  const refresh = useRefreshConn()
   const [expanded, setExpanded] = useState(loadExpanded)
-  const [selected, setSelected] = useState<string | null>(null)
+  const [sel, setSel] = useState<{ key: string; meta?: SelMeta } | null>(null)
   const [filter, setFilter] = useState('')
 
   const toggle = (key: string, open?: boolean) => {
@@ -101,22 +120,42 @@ export function Navigator() {
       const n = new Set(s)
       if (open ?? !n.has(key)) n.add(key)
       else n.delete(key)
-      try {
-        localStorage.setItem(EXPAND_KEY, JSON.stringify([...n].slice(-500)))
-      } catch {
-        // 무시
-      }
+      saveExpanded(n)
       return n
     })
   }
-  const ctx: TreeCtx = { expanded, toggle, selected, select: setSelected, filter: filter.trim().toLowerCase() }
+  const ctx: TreeCtx = { expanded, toggle, selected: sel?.key ?? null, select: (key, meta) => setSel({ key, meta }), filter: filter.trim().toLowerCase() }
+
+  // 도구 줄: 고른 줄의 접속(·DB·표)에 대해
+  const meta = sel?.meta && ws.conn(sel.meta.connId) ? sel.meta : undefined
+  const selOn = !!meta && ws.connected.has(meta.connId)
+  const tableRef = meta?.table !== undefined ? { db: meta.db ?? '', schema: meta.schema ?? '', table: meta.table } : null
+  const refreshSel = () => {
+    if (selOn && meta) refresh(meta.connId)
+    else for (const id of ws.connected) refresh(id)
+  }
+  const newEditorSel = async () => {
+    if (!meta || !(await ws.ensureConnected(meta.connId))) return
+    ws.openEditor(meta.connId, meta.db !== undefined ? { db: meta.db, schema: meta.schema ?? '' } : undefined)
+  }
+  const collapseAll = () => {
+    const n = new Set<string>()
+    saveExpanded(n)
+    setExpanded(n)
+  }
 
   return (
     <div className="navigator">
-      <div className="side-head">
-        <h2>{t('탐색기')}</h2>
+      <div className="side-tools" role="toolbar">
+        <button className="icon-btn small" title={t('새 연결')} onClick={() => ws.editConnection()}><Plus /></button>
+        <button className="icon-btn small" title={t('새로고침')} disabled={ws.connected.size === 0} onClick={refreshSel}><RefreshCw /></button>
+        <button className="icon-btn small" title={t('연결 끊기')} disabled={!selOn} onClick={() => meta && void ws.disconnect(meta.connId)}><Unplug /></button>
+        <span className="tool-sep" />
+        <button className="icon-btn small" title={t('새 SQL 편집기')} disabled={!meta} onClick={() => void newEditorSel()}><SquareTerminal /></button>
+        <button className="icon-btn small" title={t('데이터 보기')} disabled={!tableRef} onClick={() => meta && tableRef && ws.openTable(meta.connId, tableRef, meta.kind ?? 'table', 'data')}><Table2 /></button>
+        <button className="tool-text" title={t('DDL 보기')} disabled={!tableRef} onClick={() => meta && tableRef && ws.openTable(meta.connId, tableRef, meta.kind ?? 'table', 'ddl')}>DDL</button>
         <span className="spacer" />
-        <button className="icon-btn" title={t('새 연결')} onClick={() => ws.editConnection()}><Plus /></button>
+        <button className="icon-btn small" title={t('모두 접기')} onClick={collapseAll}><ChevronsDownUp /></button>
       </div>
       <div className="side-search">
         <Search />
@@ -178,10 +217,11 @@ function ConnNode({ c, ctx }: { c: ConnectionInfo; ctx: TreeCtx }) {
         depth={0}
         k={k}
         ctx={ctx}
-        className="conn-row"
-        icon={<span className="conn-icon"><DriverBadge driver={c.driver} />{isOn && <span className="on-dot" />}</span>}
-        label={<><b>{c.name}</b>{c.color && <span className="conn-color" style={{ background: c.color }} />}</>}
-        extra={<span className="muted small">{connSummary(c)}</span>}
+        className={`conn-row ${isOn ? 'on' : ''}`}
+        meta={{ connId: c.id }}
+        icon={<span className="conn-icon"><DriverBadge driver={c.driver} size={16} />{isOn && <span className="on-dot" />}</span>}
+        label={<>{c.color && <span className="conn-color" style={{ background: c.color }} />}<span className="conn-name">{c.name}</span></>}
+        extra={<span className="conn-host">{connSummary(c)}</span>}
         title={connSummary(c)}
         expandable
         loading={ws.connecting.has(c.id) || (open && dbs.isFetching)}
@@ -208,7 +248,7 @@ function DbNode({ c, db, hasSchemas, ctx }: { c: ConnectionInfo; db: string; has
   ])
   return (
     <>
-      <Row depth={1} k={k} ctx={ctx} icon={<Database />} label={db} expandable loading={open && schemas.isFetching} onMenu={menu} />
+      <Row depth={1} k={k} ctx={ctx} meta={{ connId: c.id, db, schema: hasSchemas ? def.schema : '' }} icon={<Database className="db-icon" />} label={db} expandable loading={open && schemas.isFetching} onMenu={menu} />
       {open && !hasSchemas && <ObjectFolders c={c} db={db} schema="" depth={2} ctx={ctx} />}
       {open && hasSchemas && schemas.error && <ErrorRow depth={2} error={schemas.error} />}
       {open && hasSchemas && schemas.data?.length === 0 && <Empty depth={2}>{t('스키마가 없어요')}</Empty>}
@@ -228,7 +268,7 @@ function SchemaNode({ c, db, schema, ctx }: { c: ConnectionInfo; db: string; sch
   ])
   return (
     <>
-      <Row depth={2} k={k} ctx={ctx} icon={<FolderTree />} label={schema} expandable onMenu={menu} />
+      <Row depth={2} k={k} ctx={ctx} meta={{ connId: c.id, db, schema }} icon={<FolderTree className="schema-icon" />} label={schema} expandable onMenu={menu} />
       {open && <ObjectFolders c={c} db={db} schema={schema} depth={3} ctx={ctx} />}
     </>
   )
@@ -256,7 +296,7 @@ function Folder2({ c, db, schema, kind, items, depth, ctx }: { c: ConnectionInfo
   const open = ctx.expanded.has(k) || (!!ctx.filter && items.length > 0)
   return (
     <>
-      <Row depth={depth} k={k} ctx={ctx} icon={<Folder />} label={kind === 'table' ? t('표') : t('뷰')} extra={<span className="count">{items.length}</span>} expandable />
+      <Row depth={depth} k={k} ctx={ctx} meta={{ connId: c.id, db, schema }} icon={<Folder className="folder-icon" />} label={kind === 'table' ? t('표') : t('뷰')} extra={<span className="count">{items.length}</span>} expandable />
       {open && items.map((o) => <ObjectNode key={o.name} c={c} ref2={{ db, schema, table: o.name }} obj={o} depth={depth + 1} ctx={ctx} />)}
     </>
   )
@@ -297,6 +337,7 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
         depth={depth}
         k={k}
         ctx={ctx}
+        meta={{ connId: c.id, db: ref2.db, schema: ref2.schema, table: obj.name, kind: obj.kind }}
         icon={isView ? <Eye className="view-icon" /> : <Table2 className="table-icon" />}
         label={obj.name}
         title={obj.comment || obj.name}
@@ -320,10 +361,10 @@ function TableChildren({ c, ref2, isView, depth, ctx }: { c: ConnectionInfo; ref
   const idx = useIndexes(c.id, ref2, idxOpen && !isView)
   return (
     <>
-      <Row depth={depth} k={kc} ctx={ctx} open={colsOpen} onToggle={() => ctx.toggle(kc)} icon={<Columns3 />} label={t('열|column')} extra={cols.data && <span className="count">{cols.data.length}</span>} expandable loading={cols.isFetching} />
+      <Row depth={depth} k={kc} ctx={ctx} meta={{ connId: c.id, db: ref2.db, schema: ref2.schema, table: ref2.table, kind: isView ? 'view' : 'table' }} open={colsOpen} onToggle={() => ctx.toggle(kc)} icon={<Columns3 />} label={t('열|column')} extra={cols.data && <span className="count">{cols.data.length}</span>} expandable loading={cols.isFetching} />
       {colsOpen && cols.error && <ErrorRow depth={depth + 1} error={cols.error} />}
       {colsOpen && cols.data?.map((col) => (
-        <div key={col.name} className="tree-row leaf" style={{ paddingLeft: 6 + (depth + 1) * 14 }} title={[col.type, col.nullable ? 'NULL' : 'NOT NULL', col.default !== null ? 'DEFAULT ' + col.default : '', col.comment].filter(Boolean).join(' · ')}>
+        <div key={col.name} className="tree-row leaf" style={{ paddingLeft: 4 + (depth + 1) * 16 }} title={[col.type, col.nullable ? 'NULL' : 'NOT NULL', col.default !== null ? 'DEFAULT ' + col.default : '', col.comment].filter(Boolean).join(' · ')}>
           <span className="tree-chev none" />
           <span className="tree-icon">{col.pk ? <KeyRound className="pk-icon" /> : <span className="col-dot" />}</span>
           <span className="tree-label ellipsis">{col.name}</span>
@@ -332,11 +373,11 @@ function TableChildren({ c, ref2, isView, depth, ctx }: { c: ConnectionInfo; ref
       ))}
       {!isView && (
         <>
-          <Row depth={depth} k={ki} ctx={ctx} icon={<ListTree />} label={t('인덱스')} extra={idx.data && <span className="count">{idx.data.length}</span>} expandable loading={idx.isFetching} />
+          <Row depth={depth} k={ki} ctx={ctx} meta={{ connId: c.id, db: ref2.db, schema: ref2.schema, table: ref2.table, kind: 'table' }} icon={<ListTree />} label={t('인덱스')} extra={idx.data && <span className="count">{idx.data.length}</span>} expandable loading={idx.isFetching} />
           {idxOpen && idx.error && <ErrorRow depth={depth + 1} error={idx.error} />}
           {idxOpen && idx.data?.length === 0 && <Empty depth={depth + 1}>{t('인덱스가 없어요')}</Empty>}
           {idxOpen && idx.data?.map((ix) => (
-            <div key={ix.name} className="tree-row leaf" style={{ paddingLeft: 6 + (depth + 1) * 14 }} title={ix.columns.join(', ')}>
+            <div key={ix.name} className="tree-row leaf" style={{ paddingLeft: 4 + (depth + 1) * 16 }} title={ix.columns.join(', ')}>
               <span className="tree-chev none" />
               <span className="tree-icon">{ix.primary ? <KeyRound className="pk-icon" /> : <FilePlus2 className="idx-icon" />}</span>
               <span className="tree-label ellipsis">{ix.name}</span>

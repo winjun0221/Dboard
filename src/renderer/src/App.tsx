@@ -1,6 +1,6 @@
-// 앱 틀: 왼쪽 아이콘 줄(탐색기·실행 기록·설정) · 옆 칸 · 탭(SQL 편집기·표) · 탭이 없으면 시작 화면
+// 앱 틀: 제목 줄(메뉴) · 옆 칸(탐색기·실행 기록 탭) · 편집 탭(SQL 편집기·표) · 상태 줄. 탭이 없으면 시작 화면
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { Database, Eye, History, Plus, Settings, SquareTerminal, Table2, X } from 'lucide-react'
+import { Database, Eye, History, PanelLeftClose, PanelLeftOpen, Plus, SquareTerminal, Table2, X } from 'lucide-react'
 import { resolveLang, setLang, getLang, t } from './i18n'
 import { useSettings } from './api'
 import { UiProvider, useUi } from './ui'
@@ -8,8 +8,8 @@ import { useWs, WsProvider, type Tab } from './ws'
 import { Navigator } from './components/Navigator'
 import { HistoryPanel } from './components/HistoryPanel'
 import { Splitter, usePaneSize, clamp } from './components/Splitter'
-import UpdateChip from './components/UpdateChip'
-import { DriverBadge } from './components/DriverBadge'
+import { TitleBar } from './components/TitleBar'
+import { StatusBar } from './components/StatusBar'
 import { EditorTabView } from './views/EditorTab'
 import { TableTabView } from './views/TableTab'
 import { Welcome } from './views/Welcome'
@@ -34,43 +34,43 @@ export default function App() {
   )
 }
 
-function tabTitle(tab: Tab): string {
+export function tabTitle(tab: Tab): string {
   return tab.kind === 'editor' ? tab.title : displayName(tab.ref)
+}
+
+const SIDE_KEY = 'dboard.side.hidden'
+
+export interface ShellActions {
+  newEditor(): void
+  openSettings(tab?: 'general' | 'editor' | 'about'): void
+  sideHidden: boolean
+  toggleSide(): void
 }
 
 function Shell() {
   const ws = useWs()
   const ui = useUi()
-  const [sideW, setSideW, resetSideW] = usePaneSize('side', 290)
-  const [drag, setDrag] = useState<string | null>(null)
-  const shell = useRef<HTMLDivElement>(null)
-
-  // 단축키: Ctrl+] 새 SQL 편집기, Ctrl+W 탭 닫기, Ctrl+Tab 다음 탭
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
-      if (e.key === ']') {
-        e.preventDefault()
-        const id = ws.lastConnId ?? ws.connections[0]?.id
-        if (id) void ws.ensureConnected(id).then((ok) => ok && ws.openEditor(id))
-        else ws.editConnection()
-      } else if (e.key === 'w' || e.key === 'W') {
-        if (ws.active && !document.querySelector('.dialog')) {
-          e.preventDefault()
-          void ws.closeTab(ws.active)
-        }
-      } else if (e.key === 'Tab' && ws.tabs.length > 1) {
-        e.preventDefault()
-        const i = ws.tabs.findIndex((x) => x.id === ws.active)
-        const next = ws.tabs[(i + (e.shiftKey ? -1 : 1) + ws.tabs.length) % ws.tabs.length]
-        ws.setActive(next.id)
-      }
+  const [sideW, setSideW, resetSideW] = usePaneSize('side', 300)
+  const [sideHidden, setSideHidden] = useState(() => {
+    try {
+      return localStorage.getItem(SIDE_KEY) === '1'
+    } catch {
+      return false
     }
-    window.addEventListener('keydown', key)
-    return () => window.removeEventListener('keydown', key)
-  }, [ws])
+  })
+  const [drag, setDrag] = useState<string | null>(null)
+  const body = useRef<HTMLDivElement>(null)
 
-  const openSettings = () => ui.open((close) => <SettingsDialog initial={ws.settings} onClose={close} />)
+  const toggleSide = () => setSideHidden((h) => {
+    try {
+      localStorage.setItem(SIDE_KEY, h ? '0' : '1')
+    } catch {
+      // 기억 못 해도 지금은 그대로
+    }
+    return !h
+  })
+
+  const openSettings = (tab?: 'general' | 'editor' | 'about') => ui.open((close) => <SettingsDialog initial={ws.settings} initialTab={tab} onClose={close} />)
 
   const newEditor = async () => {
     const id = ws.lastConnId ?? ws.connections[0]?.id
@@ -81,6 +81,40 @@ function Shell() {
     if (await ws.ensureConnected(id)) ws.openEditor(id)
   }
 
+  const actions: ShellActions = { newEditor: () => void newEditor(), openSettings, sideHidden, toggleSide }
+
+  // 단축키: Ctrl+] 새 SQL 편집기, Ctrl+W 탭 닫기, Ctrl+Tab 다음 탭, Ctrl+B 옆 칸, Ctrl+, 설정
+  const keys = useRef(actions)
+  keys.current = actions
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      const dialogOpen = !!document.querySelector('.dialog')
+      if (e.key === ']') {
+        e.preventDefault()
+        keys.current.newEditor()
+      } else if (e.key === 'w' || e.key === 'W') {
+        if (ws.active && !dialogOpen) {
+          e.preventDefault()
+          void ws.closeTab(ws.active)
+        }
+      } else if (e.key === 'Tab' && ws.tabs.length > 1) {
+        e.preventDefault()
+        const i = ws.tabs.findIndex((x) => x.id === ws.active)
+        const next = ws.tabs[(i + (e.shiftKey ? -1 : 1) + ws.tabs.length) % ws.tabs.length]
+        ws.setActive(next.id)
+      } else if ((e.key === 'b' || e.key === 'B') && !dialogOpen) {
+        e.preventDefault()
+        keys.current.toggleSide()
+      } else if (e.key === ',' && !dialogOpen) {
+        e.preventDefault()
+        keys.current.openSettings()
+      }
+    }
+    window.addEventListener('keydown', key)
+    return () => window.removeEventListener('keydown', key)
+  }, [ws])
+
   const dropOn = (e: DragEvent, target: string) => {
     e.preventDefault()
     if (!drag || drag === target) return
@@ -90,77 +124,88 @@ function Shell() {
     const list = ws.tabs.filter((x) => x.id !== drag)
     const at = list.findIndex((x) => x.id === target) + (after ? 1 : 0)
     list.splice(at, 0, ws.tabs[from])
-    reorder(list)
+    ws.reorder(list.map((x) => x.id))
     setDrag(null)
   }
-  const reorder = (list: Tab[]) => ws.reorder(list.map((x) => x.id))
+
+  const showWelcome = ws.tabs.length === 0 || !ws.tabs.some((x) => x.id === ws.active)
 
   return (
-    <div className="app" ref={shell}>
-      <nav className="rail">
-        <div className="rail-logo" title="DBoard"><img src="./icon.png" alt="DBoard" /></div>
-        <button className={`rail-btn ${ws.panel === 'nav' ? 'on' : ''}`} title={t('탐색기')} onClick={() => ws.setPanel('nav')}><Database /></button>
-        <button className={`rail-btn ${ws.panel === 'history' ? 'on' : ''}`} title={t('실행 기록')} onClick={() => ws.setPanel('history')}><History /></button>
-        <button className="rail-btn" title={t('새 SQL 편집기 (Ctrl+])')} onClick={() => void newEditor()}><SquareTerminal /></button>
-        <span className="spacer" />
-        <button className="rail-btn" title={t('설정')} onClick={openSettings}><Settings /></button>
-      </nav>
-      <aside className="side" style={{ width: sideW }}>
-        {ws.panel === 'nav' ? <Navigator /> : <HistoryPanel />}
-      </aside>
-      <Splitter dir="col" onReset={resetSideW} onDrag={(x) => {
-        const left = shell.current?.getBoundingClientRect().left ?? 0
-        setSideW(clamp(x - left - 52, 200, 640))
-      }} />
-      <main className="main">
-        <div className="tabbar" role="tablist">
-          {ws.tabs.map((tab) => {
-            const c = ws.conn(tab.connId)
-            const Icon = tab.kind === 'editor' ? SquareTerminal : tab.objKind === 'view' ? Eye : Table2
-            return (
-              <div
-                key={tab.id}
-                className={`tab ${ws.active === tab.id ? 'on' : ''} ${drag === tab.id ? 'dragging' : ''}`}
-                role="tab"
-                aria-selected={ws.active === tab.id}
-                draggable
-                onDragStart={() => setDrag(tab.id)}
-                onDragEnd={() => setDrag(null)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => dropOn(e, tab.id)}
-                onMouseDown={(e) => {
-                  if (e.button === 1) {
-                    e.preventDefault()
-                    void ws.closeTab(tab.id)
-                  } else if (e.button === 0) ws.setActive(tab.id)
-                }}
-                onContextMenu={(e) => ui.menu(e, [
-                  { label: t('닫기'), icon: X, hint: 'Ctrl+W', onClick: () => void ws.closeTab(tab.id) },
-                  { label: t('다른 탭 모두 닫기'), onClick: () => ws.closeOthers(tab.id) },
-                ])}
-                title={`${tabTitle(tab)} — ${c?.name ?? ''}`}
-                style={c?.color ? { boxShadow: `inset 0 2px 0 ${c.color}` } : undefined}
-              >
-                <Icon />
-                {c && <DriverBadge driver={c.driver} size={12} />}
-                <span className="ellipsis">{tabTitle(tab)}</span>
-                <button className="tab-close" onMouseDown={(e) => e.stopPropagation()} onClick={() => void ws.closeTab(tab.id)} aria-label={t('닫기')}><X /></button>
+    <div className="app">
+      <TitleBar actions={actions} />
+      <div className="body" ref={body}>
+        {!sideHidden && (
+          <>
+            <aside className="side" style={{ width: sideW }}>
+              <div className="panel-tabs" role="tablist">
+                <button className={`panel-tab ${ws.panel === 'nav' ? 'on' : ''}`} role="tab" aria-selected={ws.panel === 'nav'} onClick={() => ws.setPanel('nav')}>
+                  <Database />{t('탐색기')}
+                </button>
+                <button className={`panel-tab ${ws.panel === 'history' ? 'on' : ''}`} role="tab" aria-selected={ws.panel === 'history'} onClick={() => ws.setPanel('history')}>
+                  <History />{t('실행 기록')}
+                </button>
+                <span className="spacer" />
+                <button className="icon-btn small" title={t('옆 칸 숨기기 (Ctrl+B)')} onClick={toggleSide}><PanelLeftClose /></button>
               </div>
-            )
-          })}
-          <button className="tab-new" title={t('새 SQL 편집기 (Ctrl+])')} onClick={() => void newEditor()}><Plus /></button>
-          <span className="spacer" />
-          <UpdateChip />
-        </div>
-        <div className="tab-content">
-          {ws.tabs.length === 0 || !ws.tabs.some((x) => x.id === ws.active) ? <Welcome /> : null}
-          {ws.tabs.map((tab) => (
-            <div key={tab.id} className="tab-pane" style={{ display: ws.active === tab.id ? 'flex' : 'none' }}>
-              {tab.kind === 'editor' ? <EditorTabView tab={tab} /> : <TableTabView tab={tab} active={ws.active === tab.id} />}
-            </div>
-          ))}
-        </div>
-      </main>
+              {ws.panel === 'nav' ? <Navigator /> : <HistoryPanel />}
+            </aside>
+            <Splitter dir="col" onReset={resetSideW} onDrag={(x) => {
+              const left = body.current?.getBoundingClientRect().left ?? 0
+              setSideW(clamp(x - left, 220, 640))
+            }} />
+          </>
+        )}
+        <main className="main">
+          <div className="tabbar" role="tablist">
+            {sideHidden && <button className="tab-side" title={t('옆 칸 보이기 (Ctrl+B)')} onClick={toggleSide}><PanelLeftOpen /></button>}
+            {ws.tabs.map((tab) => {
+              const c = ws.conn(tab.connId)
+              const Icon = tab.kind === 'editor' ? SquareTerminal : tab.objKind === 'view' ? Eye : Table2
+              const on = ws.active === tab.id
+              return (
+                <div
+                  key={tab.id}
+                  className={`tab ${tab.kind} ${on ? 'on' : ''} ${drag === tab.id ? 'dragging' : ''} ${c?.color ? 'tinted' : ''}`}
+                  role="tab"
+                  aria-selected={on}
+                  draggable
+                  onDragStart={() => setDrag(tab.id)}
+                  onDragEnd={() => setDrag(null)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => dropOn(e, tab.id)}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault()
+                      void ws.closeTab(tab.id)
+                    } else if (e.button === 0) ws.setActive(tab.id)
+                  }}
+                  onContextMenu={(e) => ui.menu(e, [
+                    { label: t('닫기'), icon: X, hint: 'Ctrl+W', onClick: () => void ws.closeTab(tab.id) },
+                    { label: t('다른 탭 모두 닫기'), onClick: () => ws.closeOthers(tab.id) },
+                  ])}
+                  title={`${tabTitle(tab)} — ${c?.name ?? ''}`}
+                  style={c?.color ? { ['--tint' as string]: c.color } : undefined}
+                >
+                  <Icon />
+                  <span className="ellipsis">{tabTitle(tab)}</span>
+                  {c && <span className="tab-conn ellipsis">{c.name}</span>}
+                  <button className="tab-close" onMouseDown={(e) => e.stopPropagation()} onClick={() => void ws.closeTab(tab.id)} aria-label={t('닫기')}><X /></button>
+                </div>
+              )
+            })}
+            <button className="tab-new" title={t('새 SQL 편집기 (Ctrl+])')} onClick={() => void newEditor()}><Plus /></button>
+          </div>
+          <div className="tab-content">
+            {showWelcome ? <Welcome actions={actions} /> : null}
+            {ws.tabs.map((tab) => (
+              <div key={tab.id} className="tab-pane" style={{ display: ws.active === tab.id ? 'flex' : 'none' }}>
+                {tab.kind === 'editor' ? <EditorTabView tab={tab} /> : <TableTabView tab={tab} active={ws.active === tab.id} />}
+              </div>
+            ))}
+          </div>
+        </main>
+      </div>
+      <StatusBar />
     </div>
   )
 }

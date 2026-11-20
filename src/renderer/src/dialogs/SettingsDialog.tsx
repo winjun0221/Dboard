@@ -10,11 +10,11 @@ import { t } from '../i18n'
 // 언어 이름은 그 언어로 쓴다
 const KOREAN = '한국어' // i18n-ignore
 
-export function SettingsDialog({ initial, onClose }: { initial: AppSettings; onClose: () => void }) {
+export function SettingsDialog({ initial, initialTab, onClose }: { initial: AppSettings; initialTab?: 'general' | 'editor' | 'about'; onClose: () => void }) {
   const ui = useUi()
   const qc = useQueryClient()
   const [s, setS] = useState(initial)
-  const [tab, setTab] = useState<'general' | 'editor' | 'about'>('general')
+  const [tab, setTab] = useState<'general' | 'editor' | 'about'>(initialTab ?? 'general')
   const info = useQuery({ queryKey: ['app-info'], queryFn: () => api.appInfo() })
   const upd = useUpdateStatus()
   const [checking, setChecking] = useState(false)

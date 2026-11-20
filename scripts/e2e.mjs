@@ -84,7 +84,7 @@ try {
   await shot(win, '01-welcome.png')
 
   // ── 접속 만들기: SQLite ──
-  await win.locator('.conn-card.add').click()
+  await win.locator('.wl-item.new-conn').click()
   await win.locator('.driver-card', { hasText: 'SQLite' }).click()
   await win.locator('.dialog input.mono').fill(dbFile)
   await win.locator('.dialog .field', { hasText: '이름' }).locator('input').fill('shop')
@@ -208,14 +208,14 @@ try {
   // 열·인덱스·DDL 탭
   await win.locator('.tab', { hasText: 'orders' }).click()
   const ordersPane = win.locator('.tab-pane:visible')
-  await ordersPane.locator('.seg button', { hasText: '열' }).click()
+  await ordersPane.locator('.subtab', { hasText: '열' }).click()
   check('columns tab', await until(async () => (await ordersPane.locator('.info-table tr', { hasText: 'customer_id' }).count()) === 1))
-  await ordersPane.locator('.seg button', { hasText: '인덱스' }).click()
+  await ordersPane.locator('.subtab', { hasText: '인덱스' }).click()
   check('indexes tab', await until(async () => (await ordersPane.locator('.info-table tr', { hasText: 'ix_orders_status' }).count()) === 1))
-  await ordersPane.locator('.seg button', { hasText: 'DDL' }).click()
+  await ordersPane.locator('.subtab', { hasText: 'DDL' }).click()
   check('ddl tab', await until(async () => (await ordersPane.locator('.ddl-code .cm-content').innerText()).includes('CREATE TABLE orders')))
   await shot(win, '07-ddl.png')
-  await ordersPane.locator('.seg button', { hasText: '데이터' }).click()
+  await ordersPane.locator('.subtab', { hasText: '데이터' }).click()
 
   // ── SQL 편집기 ──
   await win.locator('.tab-new').click()
@@ -318,14 +318,36 @@ try {
   check('csv imported (EUC-KR, quoted comma, empty→NULL)', await until(() => sql("SELECT city FROM customers WHERE name = '성춘향, 남원'")[0]?.city === null && sql("SELECT COUNT(*) AS n FROM customers WHERE name = '홍길동'")[0].n === 1))
 
   // ── 실행 기록 ──
-  await win.locator('.rail-btn[title="실행 기록"]').click()
+  await win.locator('.panel-tab', { hasText: '실행 기록' }).click()
   check('history panel', await until(async () => (await win.locator('.hist-item', { hasText: 'SELECT COUNT(*) AS n FROM customers' }).count()) > 0))
   check('history keeps errors', (await win.locator('.hist-item.fail').count()) > 0)
   await shot(win, '11-history.png')
-  await win.locator('.rail-btn[title="탐색기"]').click()
+  await win.locator('.panel-tab', { hasText: '탐색기' }).click()
+
+  // ── 제목 줄 메뉴 · 상태 줄 · 옆 칸 숨기기 ──
+  await win.locator('.tab', { hasText: 'orders' }).click()
+  check('status bar breadcrumb', await until(async () => {
+    const s = await win.locator('.statusbar').innerText()
+    return s.includes('shop') && s.includes('orders') && s.includes('연결됨')
+  }))
+  await win.locator('.menubar-btn', { hasText: 'SQL' }).click()
+  check('SQL menu disabled on table tab', await until(async () => (await win.locator('.ctx-menu .menu-item:disabled', { hasText: '스크립트 실행' }).count()) === 1))
+  await win.locator('.menubar-btn', { hasText: '보기' }).hover()
+  check('menu switches on hover', await until(async () => (await win.locator('.ctx-menu .menu-item', { hasText: '어둡게' }).count()) === 1))
+  await win.keyboard.press('Escape')
+  check('menu closes', await until(async () => (await win.locator('.ctx-menu').count()) === 0))
+  await win.locator('.tab.editor').first().click()
+  await win.locator('.menubar-btn', { hasText: 'SQL' }).click()
+  check('SQL menu enabled on editor tab', await until(async () => (await win.locator('.ctx-menu .menu-item:not(:disabled)', { hasText: '스크립트 실행' }).count()) === 1))
+  await win.locator('.menubar-btn', { hasText: 'SQL' }).dispatchEvent('mousedown', { button: 0 })
+  check('menu toggles closed', await until(async () => (await win.locator('.ctx-menu').count()) === 0))
+  await win.keyboard.press('Control+b')
+  check('hide side panel', await until(async () => (await win.locator('.side').count()) === 0))
+  await win.locator('.tab-side').click()
+  check('show side panel', await until(async () => (await win.locator('.side .tree').count()) === 1))
 
   // ── 접속 정보 파일에 비밀번호가 글자 그대로 없는지 (MySQL 접속을 비밀번호와 함께 저장) ──
-  await win.locator('.side-head button[title="새 연결"]').click()
+  await win.locator('.side-tools button[title="새 연결"]').click()
   await win.locator('.driver-card', { hasText: 'MySQL' }).click()
   await win.locator('.dialog .field', { hasText: '이름' }).locator('input').fill('mysql-test')
   await win.locator('.dialog .field', { hasText: '호스트' }).locator('input').fill('127.0.0.1')
@@ -339,10 +361,10 @@ try {
   if (process.env.DBOARD_E2E_SERVERS === '1') await servers(win, submit)
 
   // ── 영어 전환 ──
-  await win.locator('.rail-btn[title="설정"]').click()
+  await win.locator('.titlebar button[title="설정"]').click()
   await win.locator('.dialog select').first().selectOption('en')
   await submit()
-  check('switch to English', await until(async () => (await win.locator('.rail-btn[title="Explorer"]').count()) === 1))
+  check('switch to English', await until(async () => (await win.locator('.panel-tab', { hasText: 'Explorer' }).count()) === 1))
   await win.locator('.tab', { hasText: 'orders' }).click()
   check('English data view', await until(async () => (await win.locator('.tab-pane:visible .data-bar').innerText()).includes('Add row')))
   await shot(win, '12-english.png')
@@ -379,7 +401,7 @@ async function servers(win, submit) {
     { kind: 'SQL Server', name: 'mssql', host: '127.0.0.1', port: '14331', user: 'sa', pw: 'Dboard_test1!', db: 'master' },
   ]
   for (const c of conns) {
-    await win.locator('.side-head button[title="새 연결"]').click()
+    await win.locator('.side-tools button[title="새 연결"]').click()
     await win.locator('.driver-card', { hasText: c.kind }).click()
     const dlg = win.locator('.dialog')
     await dlg.locator('.field', { hasText: '이름' }).locator('input').fill(c.name)
@@ -415,7 +437,7 @@ async function servers(win, submit) {
   }
 
   // SSH 터널: 시험 SSH 서버(127.0.0.1:22221)를 거쳐, 그 서버에서 본 주소 postgres:5432로
-  await win.locator('.side-head button[title="새 연결"]').click()
+  await win.locator('.side-tools button[title="새 연결"]').click()
   await win.locator('.driver-card', { hasText: 'PostgreSQL' }).click()
   const dlg = win.locator('.dialog')
   await dlg.locator('.field', { hasText: '이름' }).locator('input').fill('pg-ssh')

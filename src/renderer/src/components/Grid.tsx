@@ -51,8 +51,8 @@ export interface GridProps {
   empty?: string
 }
 
-const ROW_H = 26
-const HEAD_H = 34
+const ROW_H = 24
+const HEAD_H = 32
 const MIN_W = 56
 const MAX_W = 420
 

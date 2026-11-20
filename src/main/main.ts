@@ -81,7 +81,29 @@ const autoZoom = (width: number) => Math.min(1.25, Math.max(1, Math.round((1 + (
 
 function applyZoom() {
   if (!win || win.isDestroyed()) return
-  win.webContents.setZoomFactor(zoomSetting > 0 ? zoomSetting : autoZoom(win.getContentBounds().width))
+  const z = zoomSetting > 0 ? zoomSetting : autoZoom(win.getContentBounds().width)
+  win.webContents.setZoomFactor(z)
+  applyTitleBar(z)
+}
+
+// ───────── 제목 줄 ─────────
+// 창 테두리 없이 화면이 제목 줄(메뉴)을 그리고, 오른쪽 최소화·최대화·닫기 단추만 Windows가 그린다.
+// 색은 styles.css의 --chrome·--text-2와 같게, 높이는 .titlebar(36px) × 배율.
+
+const TITLE_H = 36
+const CHROME = { light: { color: '#e9ebef', symbolColor: '#3d4451' }, dark: { color: '#1a1b1e', symbolColor: '#c3c7ce' } }
+
+function titleBarOverlay(zoom: number) {
+  return { ...CHROME[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'], height: Math.round(TITLE_H * zoom) }
+}
+
+function applyTitleBar(zoom = win?.webContents.getZoomFactor() ?? 1) {
+  if (!win || win.isDestroyed()) return
+  try {
+    win.setTitleBarOverlay(titleBarOverlay(zoom))
+  } catch {
+    // 지원하지 않는 환경
+  }
 }
 
 function setZoom(z: number) {
@@ -381,8 +403,9 @@ function createWindow() {
     title: 'DBoard',
     ...(!app.isPackaged && fs.existsSync(path.join(app.getAppPath(), 'build', 'icon.png')) ? { icon: path.join(app.getAppPath(), 'build', 'icon.png') } : {}),
     show: false,
-    autoHideMenuBar: true,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#121418' : '#f3f4f7',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: titleBarOverlay(1),
+    backgroundColor: titleBarOverlay(1).color,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -392,6 +415,12 @@ function createWindow() {
     },
   })
   win.once('ready-to-show', () => win?.show())
+  const themeChanged = () => {
+    applyTitleBar()
+    win?.setBackgroundColor(titleBarOverlay(1).color)
+  }
+  nativeTheme.on('updated', themeChanged)
+  win.on('closed', () => nativeTheme.off('updated', themeChanged))
 
   let timer: NodeJS.Timeout | undefined
   win.on('resize', () => {

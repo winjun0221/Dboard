@@ -1,13 +1,13 @@
 // 앱 전체 공용 화면 장치: 알림, 대화 상자(겹쳐 열기), 확인 창, 오른쪽 클릭 메뉴
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import { TriangleAlert } from 'lucide-react'
+import { Check, TriangleAlert } from 'lucide-react'
 import Toasts, { type Toast } from './components/Toasts'
 import { Dialog } from './components/Dialog'
 import { t } from './i18n'
 
 export type MenuItem =
-  | { label: string; icon?: LucideIcon; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string }
+  | { label: string; icon?: LucideIcon; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string; checked?: boolean }
   | { section: string }
   | 'sep'
   | null
@@ -20,8 +20,8 @@ interface Ui {
   /** 대화 상자 열기. render가 받는 close를 부르면 닫힘 */
   open(render: (close: () => void) => ReactNode): void
   confirm(o: { title: string; message: ReactNode; confirm?: string; danger?: boolean }): Promise<boolean>
-  /** 마우스 위치(오른쪽 클릭) 또는 지정한 좌표에 메뉴 */
-  menu(at: MouseEvent | { x: number; y: number }, items: MenuItem[]): void
+  /** 마우스 위치(오른쪽 클릭) 또는 지정한 좌표에 메뉴. onClose는 다른 메뉴로 바뀔 때가 아니라 닫힐 때만 */
+  menu(at: MouseEvent | { x: number; y: number }, items: MenuItem[], o?: { onClose?: () => void; className?: string }): void
 }
 
 const UiContext = createContext<Ui | null>(null)
@@ -35,7 +35,9 @@ export function useUi(): Ui {
 export function UiProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [dialogs, setDialogs] = useState<{ id: number; node: ReactNode }[]>([])
-  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  type MenuState = { x: number; y: number; items: MenuItem[]; onClose?: () => void; className?: string }
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  const menuRef = useRef<MenuState | null>(null)
   const seq = useRef(0)
 
   const notify = useCallback((text: string, kind: Toast['kind'] = 'info') => {
@@ -47,7 +49,10 @@ export function UiProvider({ children }: { children: ReactNode }) {
   const open = useCallback((render: (close: () => void) => ReactNode) => {
     const id = ++seq.current
     const close = () => setDialogs((d) => d.filter((x) => x.id !== id))
+    const m = menuRef.current
+    menuRef.current = null
     setMenu(null)
+    m?.onClose?.()
     setDialogs((d) => [...d, { id, node: render(close) }])
   }, [])
 
@@ -67,7 +72,7 @@ export function UiProvider({ children }: { children: ReactNode }) {
     ))
   }), [open])
 
-  const showMenu = useCallback((at: MouseEvent | { x: number; y: number }, items: MenuItem[]) => {
+  const showMenu = useCallback((at: MouseEvent | { x: number; y: number }, items: MenuItem[], o?: { onClose?: () => void; className?: string }) => {
     let x: number
     let y: number
     if ('preventDefault' in at) {
@@ -78,7 +83,15 @@ export function UiProvider({ children }: { children: ReactNode }) {
     } else {
       ;({ x, y } = at)
     }
-    if (items.some((i) => i && i !== 'sep' && !('section' in i))) setMenu({ x, y, items })
+    if (!items.some((i) => i && i !== 'sep' && !('section' in i))) return
+    menuRef.current = { x, y, items, ...o }
+    setMenu(menuRef.current)
+  }, [])
+  const closeMenu = useCallback(() => {
+    const m = menuRef.current
+    menuRef.current = null
+    setMenu(null)
+    m?.onClose?.()
   }, [])
 
   const ui = useMemo<Ui>(() => ({ notify, open, confirm, menu: showMenu }), [notify, open, confirm, showMenu])
@@ -87,13 +100,13 @@ export function UiProvider({ children }: { children: ReactNode }) {
     <UiContext.Provider value={ui}>
       {children}
       {dialogs.map((d) => <div key={d.id}>{d.node}</div>)}
-      {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} className={menu.className} onClose={closeMenu} />}
       <Toasts toasts={toasts} onClose={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
     </UiContext.Provider>
   )
 }
 
-function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+function ContextMenu({ x, y, items, className, onClose }: { x: number; y: number; items: MenuItem[]; className?: string; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ left: x, top: y })
 
@@ -130,11 +143,11 @@ function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: Me
   const clean = list.filter((it, i) => it !== 'sep' || (i > 0 && i < list.length - 1 && list[i + 1] !== 'sep' && list[i - 1] !== 'sep'))
 
   return (
-    <div className="ctx-menu" ref={ref} style={pos} role="menu" onContextMenu={(e) => e.preventDefault()}>
+    <div className={`ctx-menu ${className ?? ''}`} ref={ref} style={pos} role="menu" onContextMenu={(e) => e.preventDefault()}>
       {clean.map((it, i) => {
         if (it === 'sep') return <div key={i} className="menu-sep" />
         if ('section' in it) return <div key={i} className="menu-label">{it.section}</div>
-        const Icon = it.icon
+        const Icon = it.checked ? Check : it.icon
         return (
           <button
             key={i}

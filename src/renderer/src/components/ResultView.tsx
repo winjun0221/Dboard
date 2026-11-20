@@ -74,7 +74,7 @@ export function ResultView({ result, name, fetchAll, exportAll }: {
 
   return (
     <div className="result-view">
-      <div className="result-bar">
+      <div className="result-bar toolbar">
         <span className="result-count"><b>{fmtNum(result.rows.length)}</b>{t('행')}</span>
         <span className="muted small">{formatMs(result.ms)}</span>
         {result.truncated && (
@@ -84,8 +84,8 @@ export function ResultView({ result, name, fetchAll, exportAll }: {
           </span>
         )}
         <span className="spacer" />
-        <button className="btn small" onClick={copyAll} title={t('열 이름과 함께 전부 복사 (엑셀에 붙여 넣기 좋게 탭으로 구분)')}><ClipboardCopy />{t('복사')}</button>
-        <button className="btn small" onClick={doExport}><Download />{t('CSV')}</button>
+        <button className="tbtn" onClick={copyAll} title={t('열 이름과 함께 전부 복사 (엑셀에 붙여 넣기 좋게 탭으로 구분)')}><ClipboardCopy />{t('복사')}</button>
+        <button className="tbtn" onClick={doExport}><Download />{t('CSV')}</button>
       </div>
       <Grid
         handle={grid}

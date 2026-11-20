@@ -4,7 +4,6 @@ import { ClipboardCopy, Columns3, Eye, FileCode2, KeyRound, ListTree, LoaderCirc
 import { api, errorText, useColumns, useIndexes } from '../api'
 import { useWs, type TableSub, type TableTab } from '../ws'
 import { t } from '../i18n'
-import { Tabs } from '../components/Dialog'
 import { SqlEditor } from '../components/SqlEditor'
 import { DriverBadge } from '../components/DriverBadge'
 import { DataView } from './DataView'
@@ -34,13 +33,19 @@ export function TableTabView({ tab, active }: { tab: TableTab; active: boolean }
   return (
     <div className="table-tab">
       <div className="table-head">
-        <span className={`obj-icon ${isView ? 'view' : ''}`}>{isView ? <Eye /> : <Table2 />}</span>
-        <div className="obj-title">
-          <b>{tab.ref.table}</b>
-          <span className="muted small"><DriverBadge driver={conn.driver} size={13} /> {conn.name}{path && ' · ' + path}{isView && ' · ' + t('뷰')}</span>
+        <div className="subtabs" role="tablist">
+          {subs.map((s) => (
+            <button key={s.value} type="button" role="tab" aria-selected={tab.sub === s.value} className={`subtab ${tab.sub === s.value ? 'on' : ''}`} onClick={() => ws.updateTab(tab.id, { sub: s.value })}>
+              <s.icon />{s.label}
+            </button>
+          ))}
         </div>
         <span className="spacer" />
-        <Tabs value={tab.sub} onChange={(v) => ws.updateTab(tab.id, { sub: v })} tabs={subs} />
+        <span className="obj-title">
+          <span className={`obj-icon ${isView ? 'view' : ''}`}>{isView ? <Eye /> : <Table2 />}</span>
+          <b className="ellipsis">{tab.ref.table}</b>
+          <span className="muted ellipsis"><DriverBadge driver={conn.driver} size={12} /> {conn.name}{path && ' · ' + path}{isView && ' · ' + t('뷰')}</span>
+        </span>
       </div>
       {needConnect && <div className="center-fill"><button className="btn" onClick={() => void ws.ensureConnected(tab.connId)}>{t('연결해서 보기')}</button></div>}
       <div className="table-body" style={{ display: tab.sub === 'data' ? 'flex' : 'none' }}>
@@ -104,9 +109,9 @@ export function TableTabView({ tab, active }: { tab: TableTab; active: boolean }
       )}
       {!needConnect && tab.sub === 'ddl' && (
         <div className="table-body ddl">
-          <div className="ddl-bar">
-            <button className="btn small" disabled={!ddl.data} onClick={() => ddl.data && void api.copyText(ddl.data)}><ClipboardCopy />{t('복사')}</button>
-            <button className="btn small" disabled={!ddl.data} onClick={() => ddl.data && ws.openEditor(tab.connId, { db: tab.ref.db, schema: tab.ref.schema, text: ddl.data })}><SquareTerminal />{t('편집기에서 열기')}</button>
+          <div className="ddl-bar toolbar">
+            <button className="tbtn" disabled={!ddl.data} onClick={() => ddl.data && void api.copyText(ddl.data)}><ClipboardCopy />{t('복사')}</button>
+            <button className="tbtn" disabled={!ddl.data} onClick={() => ddl.data && ws.openEditor(tab.connId, { db: tab.ref.db, schema: tab.ref.schema, text: ddl.data })}><SquareTerminal />{t('편집기에서 열기')}</button>
           </div>
           {ddl.isPending ? <Loading /> : ddl.error ? <div className="banner error">{errorText(ddl.error)}</div> : (
             <div className="ddl-code"><SqlEditor initial={ddl.data ?? ''} driver={conn.driver} fontSize={ws.settings.editorFontSize} readOnly /></div>

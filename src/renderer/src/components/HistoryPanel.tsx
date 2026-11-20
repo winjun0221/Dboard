@@ -44,10 +44,10 @@ export function HistoryPanel() {
 
   return (
     <div className="history-panel">
-      <div className="side-head">
-        <h2>{t('실행 기록')}</h2>
+      <div className="side-tools" role="toolbar">
+        <span className="side-tools-note">{t('누르면 지금 편집기에 넣어요')}</span>
         <span className="spacer" />
-        <button className="icon-btn" title={t('모두 지우기')} onClick={() => void clear()}><Trash2 /></button>
+        <button className="icon-btn small" title={t('모두 지우기')} onClick={() => void clear()}><Trash2 /></button>
       </div>
       <div className="side-search">
         <Search />
