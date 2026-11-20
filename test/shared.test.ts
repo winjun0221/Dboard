@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { detectDelimiter, detectEncoding, parseCsv, csvLine } from '../src/shared/csv'
 import { literal, qualify, quoteIdent, selectPage } from '../src/shared/dialect'
 import { buildChange, buildInsertMany, inlineParams, previewChanges } from '../src/shared/edit'
-import { firstKeyword, isDangerous, isReadOnlyQuery, mask, splitSql, statementAt } from '../src/shared/sql'
+import { firstKeyword, isDangerous, isReadOnlyQuery, mask, referencedTables, splitSql, statementAt } from '../src/shared/sql'
 
 const texts = (src: string, d: Parameters<typeof splitSql>[1], o?: Parameters<typeof splitSql>[2]) => splitSql(src, d, o).map((s) => s.text)
 
@@ -171,5 +171,23 @@ describe('csv', () => {
     expect(detectEncoding(new TextEncoder().encode('이름,나이'))).toBe('utf8')
     // '이름' in EUC-KR
     expect(detectEncoding(new Uint8Array([0xc0, 0xcc, 0xb8, 0xa7, 0x2c, 0x31]))).toBe('euc-kr')
+  })
+})
+
+describe('referencedTables', () => {
+  it('finds tables after FROM, JOIN, UPDATE, INTO', () => {
+    expect(referencedTables('SELECT * FROM orders o JOIN customers AS c ON c.id = o.customer_id WHERE ', 'sqlite')).toEqual(['orders', 'customers'])
+    expect(referencedTables('UPDATE notes SET body = 1 WHERE ', 'mysql')).toEqual(['notes'])
+    expect(referencedTables('INSERT INTO t1 (a) SELECT a FROM t2', 'postgres')).toEqual(['t1', 't2'])
+  })
+  it('reads comma lists, quotes and schema prefixes', () => {
+    expect(referencedTables('SELECT  FROM public."Order Items" oi, s.products p, x WHERE', 'postgres')).toEqual(['Order Items', 'products', 'x'])
+    expect(referencedTables('SELECT  FROM [dbo].[주문] WHERE', 'mssql')).toEqual(['주문'])
+    expect(referencedTables('SELECT  FROM `db`.`t` ORDER BY', 'mysql')).toEqual(['t'])
+  })
+  it('ignores strings, comments and subqueries', () => {
+    expect(referencedTables("SELECT 'from fake' FROM real -- join other\n", 'sqlite')).toEqual(['real'])
+    expect(referencedTables('SELECT * FROM (SELECT 1) AS s', 'sqlite')).toEqual([])
+    expect(referencedTables('SELECT * FROM a WHERE x IN (SELECT y FROM b)', 'sqlite')).toEqual(['a', 'b'])
   })
 })

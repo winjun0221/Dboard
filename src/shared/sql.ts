@@ -235,3 +235,60 @@ export function isReadOnlyQuery(sql: string, d: Dialect): boolean {
   // WITH … DELETE, SELECT … INTO 같은 쓰기 문장은 제외
   return !/\b(INSERT|UPDATE|DELETE|MERGE|INTO|CREATE|DROP|ALTER|TRUNCATE|CALL|EXEC|EXECUTE)\b/i.test(mask(sql, d))
 }
+
+// ───────── 자동 완성: 문장에 나오는 표 ─────────
+
+const CLAUSE_END = /^(WHERE|GROUP|ORDER|HAVING|LIMIT|OFFSET|FETCH|JOIN|INNER|LEFT|RIGHT|FULL|CROSS|OUTER|NATURAL|ON|USING|UNION|INTERSECT|EXCEPT|WINDOW|FOR|SET|VALUES|RETURNING|SELECT|WITH)$/i
+const OPEN_CLOSE: Record<string, string> = { '"': '"', '`': '`', '[': ']' }
+
+/** pos부터 (공백 건너뛰고) 점으로 이은 이름 하나. 따옴표는 벗기고 마지막 부분(표 이름)만 */
+function readName(src: string, masked: string, pos: number): { name: string; end: number } | null {
+  let i = pos
+  // 주석은 mask에서 공백이 됐다. 따옴표 이름도 공백이 되므로 원래 글의 여는 따옴표에서 멈춘다
+  while (i < src.length && /\s/.test(masked[i]) && !(src[i] in OPEN_CLOSE)) i++
+  let name = ''
+  for (;;) {
+    const c = src[i]
+    if (c !== undefined && c in OPEN_CLOSE) {
+      const close = src.indexOf(OPEN_CLOSE[c], i + 1)
+      if (close < 0) return null
+      name = src.slice(i + 1, close)
+      i = close + 1
+    } else {
+      const m = /^[\p{L}\p{N}_$#@]+/u.exec(src.slice(i, i + 256))
+      if (!m) return null
+      name = m[0]
+      i += m[0].length
+    }
+    if (src[i] !== '.') break
+    i++
+  }
+  return name ? { name, end: i } : null
+}
+
+/** 문장에서 FROM·JOIN·UPDATE·INTO·TABLE 뒤에 나오는 표 이름 (FROM a x, b y 목록 포함, 스키마는 뗌). 자동 완성에서 열 이름을 고를 때 쓴다 */
+export function referencedTables(sql: string, d: Dialect): string[] {
+  const masked = mask(sql, d)
+  const out: string[] = []
+  const seen = new Set<string>()
+  const add = (n: string) => {
+    if (CLAUSE_END.test(n) || seen.has(n.toLowerCase())) return
+    seen.add(n.toLowerCase())
+    out.push(n)
+  }
+  for (const k of masked.matchAll(/\b(FROM|JOIN|UPDATE|INTO|TABLE)\b/gi)) {
+    let i = k.index + k[0].length
+    for (;;) {
+      const r = readName(sql, masked, i)
+      if (!r) break
+      add(r.name)
+      if (k[1].toUpperCase() !== 'FROM') break
+      // FROM a [AS] x, b … — 별칭을 건너뛰고 쉼표가 있으면 다음 표
+      const rest = masked.slice(r.end, r.end + 200)
+      const m = /^\s*(?:(?:AS\s+)?([\p{L}\p{N}_$]+))?\s*,/iu.exec(rest)
+      if (!m || (m[1] && CLAUSE_END.test(m[1]))) break
+      i = r.end + m[0].length
+    }
+  }
+  return out
+}

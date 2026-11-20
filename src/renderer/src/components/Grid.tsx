@@ -1,4 +1,5 @@
-// 결과 표: 보이는 행만 그리기(수만 행도 가볍게), 칸 고르기(끌기·Shift), 열 너비 조절, 머리글 눌러 정렬, 칸 고치기, 복사
+// 결과 표: 보이는 행만 그리기(수만 행도 가볍게), 칸 고르기(끌기·Shift — 가장자리 밖으로 끌면 저절로 넘어감), 가운데 단추로 끌어 옮기기,
+// 열 너비 조절, 머리글 눌러 정렬, 칸 고치기, 복사
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type Ref } from 'react'
 import { ArrowDown, ArrowUp, KeyRound } from 'lucide-react'
 import { isBin, type Cell, type SortKey } from '../../../shared/types'
@@ -55,6 +56,11 @@ const ROW_H = 24
 const HEAD_H = 32
 const MIN_W = 56
 const MAX_W = 420
+/** 끌어서 고를 때 이만큼 가장자리에 가까우면(또는 밖이면) 저절로 넘어간다 */
+const EDGE = 24
+/** 가장자리에서 멀어질수록 빨라지되 한 화면 틀(프레임)에 이만큼까지 */
+const MAX_STEP = 48
+const edgeStep = (dist: number) => Math.min(MAX_STEP, Math.ceil(dist / 3) + 2)
 
 function autoWidths(columns: GridColumn[], rowCount: number, cell: (r: number, c: number) => Cell): number[] {
   const n = Math.min(rowCount, 60)
@@ -75,7 +81,9 @@ export function Grid(p: GridProps) {
   const [anchor, setAnchor] = useState<[number, number] | null>(null)
   const [focusCell, setFocusCell] = useState<[number, number] | null>(null)
   const [editing, setEditing] = useState<{ r: number; c: number; value: string; dirty: boolean } | null>(null)
-  const dragging = useRef(false)
+  /** 끌어서 고르는 중: 칸 범위 / 행 번호로 여러 행 */
+  const drag = useRef<{ mode: 'cells' | 'rows'; x: number; y: number; x0: number; y0: number; moved: boolean; raf: number } | null>(null)
+  const lastPoint = useRef<string>('')
 
   // 열이 바뀌면(다른 결과) 너비 다시
   useEffect(() => {
@@ -216,13 +224,117 @@ export function Grid(p: GridProps) {
     if (handled) e.preventDefault()
   }
 
-  useEffect(() => {
-    const up = () => {
-      dragging.current = false
+  /** 화면 좌표 → 칸 (보이는 데이터 영역 안으로 당겨서) */
+  const cellAtPoint = (x: number, y: number): [number, number] | null => {
+    const el = box.current
+    if (!el || rowCount === 0 || columns.length === 0) return null
+    const rect = el.getBoundingClientRect()
+    const cx = Math.max(rect.left + numW + 1, Math.min(rect.left + el.clientWidth - 1, x))
+    const cy = Math.max(rect.top + HEAD_H + 1, Math.min(rect.top + el.clientHeight - 1, y))
+    const gx = cx - rect.left + el.scrollLeft
+    const gy = cy - rect.top + el.scrollTop - HEAD_H
+    const r = Math.max(0, Math.min(rowCount - 1, Math.floor(gy / ROW_H)))
+    let c = columns.length - 1
+    for (let i = 0; i < columns.length; i++) {
+      if (gx < lefts[i + 1]) {
+        c = i
+        break
+      }
     }
+    return [r, c]
+  }
+
+  // 끌기: 마우스가 가장자리 근처나 표 밖이면 그쪽으로 넘기고, 마우스 아래 칸까지 고른다
+  const dragTick = () => {
+    const d = drag.current
+    const el = box.current
+    if (!d || !el) return
+    if (d.moved) {
+      const rect = el.getBoundingClientRect()
+      const left = rect.left + numW
+      const right = rect.left + el.clientWidth
+      const top = rect.top + HEAD_H
+      const bottom = rect.top + el.clientHeight
+      let dx = 0
+      let dy = 0
+      if (d.mode === 'cells') {
+        if (d.x > right - EDGE) dx = edgeStep(d.x - (right - EDGE))
+        else if (d.x < left + EDGE) dx = -edgeStep(left + EDGE - d.x)
+      }
+      if (d.y > bottom - EDGE) dy = edgeStep(d.y - (bottom - EDGE))
+      else if (d.y < top + EDGE) dy = -edgeStep(top + EDGE - d.y)
+      if (dx) el.scrollLeft += dx
+      if (dy) el.scrollTop += dy
+      const at = cellAtPoint(d.x, d.y)
+      if (at) {
+        const next: [number, number] = d.mode === 'rows' ? [at[0], columns.length - 1] : at
+        const key = next.join(',')
+        if (key !== lastPoint.current) {
+          lastPoint.current = key
+          setFocusCell(next)
+        }
+      }
+    }
+    d.raf = requestAnimationFrame(dragTick)
+  }
+  const tickRef = useRef(dragTick)
+  tickRef.current = dragTick
+
+  const startDrag = (mode: 'cells' | 'rows', e: MouseEvent) => {
+    if (drag.current) cancelAnimationFrame(drag.current.raf)
+    lastPoint.current = ''
+    drag.current = { mode, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false, raf: requestAnimationFrame(() => tickRef.current()) }
+  }
+
+  useEffect(() => {
+    const move = (e: globalThis.MouseEvent) => {
+      const d = drag.current
+      if (!d) return
+      if ((e.buttons & 1) !== 1) {
+        cancelAnimationFrame(d.raf)
+        drag.current = null
+        return
+      }
+      d.x = e.clientX
+      d.y = e.clientY
+      // 누른 자리에서 조금 움직여야 끌기로 본다 (왼쪽 끝 칸을 눌렀다고 바로 넘어가지 않게)
+      if (!d.moved && Math.abs(d.x - d.x0) + Math.abs(d.y - d.y0) > 4) d.moved = true
+    }
+    const up = () => {
+      if (drag.current) cancelAnimationFrame(drag.current.raf)
+      drag.current = null
+    }
+    document.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
-    return () => window.removeEventListener('mouseup', up)
+    return () => {
+      document.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      if (drag.current) cancelAnimationFrame(drag.current.raf)
+    }
   }, [])
+
+  // 가운데 단추(휠)를 누른 채 끌면 표를 잡아 옮긴다
+  const panStart = (e: MouseEvent) => {
+    const el = box.current
+    if (!el) return
+    e.preventDefault()
+    const x0 = e.clientX
+    const y0 = e.clientY
+    const l0 = el.scrollLeft
+    const t0 = el.scrollTop
+    const move = (ev: globalThis.MouseEvent) => {
+      el.scrollLeft = l0 - (ev.clientX - x0)
+      el.scrollTop = t0 - (ev.clientY - y0)
+    }
+    const up = () => {
+      document.removeEventListener('mousemove', move)
+      document.removeEventListener('mouseup', up)
+      document.body.classList.remove('panning')
+    }
+    document.addEventListener('mousemove', move)
+    document.addEventListener('mouseup', up)
+    document.body.classList.add('panning')
+  }
 
   const cellDown = (e: MouseEvent, r: number, c: number) => {
     if (e.button === 2) {
@@ -239,7 +351,7 @@ export function Grid(p: GridProps) {
       setAnchor([r, c])
       setFocusCell([r, c])
     }
-    dragging.current = true
+    startDrag('cells', e)
     box.current?.focus()
   }
 
@@ -250,6 +362,7 @@ export function Grid(p: GridProps) {
       setAnchor([r, 0])
       setFocusCell([r, columns.length - 1])
     }
+    if (e.button === 0) startDrag('rows', e)
     box.current?.focus()
   }
 
@@ -293,7 +406,6 @@ export function Grid(p: GridProps) {
       cells.push(
         <div key={c} className={cls.join(' ')} style={{ width: widths[c] }}
           onMouseDown={(e) => cellDown(e, r, c)}
-          onMouseEnter={() => { if (dragging.current) setFocusCell([r, c]) }}
           onDoubleClick={() => startEdit(r, c)}>
           {p.textOf?.(r, c) ?? cellDisplay(v)}
         </div>,
@@ -318,6 +430,7 @@ export function Grid(p: GridProps) {
         setScroll({ top: el.scrollTop, left: el.scrollLeft })
       }}
       onKeyDown={onKeyDown}
+      onMouseDown={(e) => { if (e.button === 1) panStart(e) }}
       onContextMenu={(e) => {
         if (!p.onMenu || !sel) return
         e.preventDefault()

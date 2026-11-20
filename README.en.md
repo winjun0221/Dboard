@@ -28,7 +28,7 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 
 - **Connections** — save, duplicate and color connections, test before saving, SSH tunnel (password or private key), SSL
 - **Explorer** — database → schema → tables and views → columns and indexes, table search
-- **SQL editor** — syntax highlighting, table and column autocomplete, run the statement at the cursor or the selection (`Ctrl+Enter`), run the whole script (`Alt+X`), cancel, query history
+- **SQL editor** — syntax highlighting, autocomplete as you type (accept with `Tab`; table names, columns of the tables in FROM, `alias.column`), run the statement at the cursor or the selection (`Ctrl+Enter`), run the whole script (`Alt+X`), cancel, query history
 - **Result grid** — smooth with tens of thousands of rows, click to sort, copy cells or ranges (paste straight into Excel), CSV export
 - **Edit table data** — edit cells, add and delete rows, undo (`Ctrl+Z`), preview the SQL before saving, save in one transaction (everything is rolled back if anything fails)
 - **DDL and CSV import** — view and copy the CREATE statement, import CSV (UTF-8 and EUC-KR detected automatically, column mapping)
@@ -49,7 +49,7 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 |---|---|
 | `Ctrl+Enter` | Run the selection, or the statement at the cursor |
 | `Alt+X` | Run the whole script |
-| `Ctrl+Space` | Autocomplete |
+| `Ctrl+Space` · `Tab` | Show · accept autocomplete |
 | `Ctrl+/` | Toggle comment |
 | `Ctrl+]` | New SQL editor |
 | `Ctrl+W` · `Ctrl+Tab` | Close tab · next tab |

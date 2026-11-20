@@ -633,3 +633,4 @@ fieldset.plain:disabled { opacity: 0.55; }
 .wl-item.conn .wl-label { max-width: 50%; font-weight: 600; }
 .wl-item.conn .conn-host { flex: 1; }
 .wl-item.conn .state-dot { margin-left: auto; }
+body.panning, body.panning * { cursor: grabbing !important; user-select: none !important; }

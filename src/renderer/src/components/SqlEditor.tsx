@@ -1,6 +1,6 @@
-// SQL 편집기 (CodeMirror 6): 방언별 문법 색칠, 표·열 자동 완성, Ctrl+Enter 실행, Alt+X 스크립트 실행
+// SQL 편집기 (CodeMirror 6): 방언별 문법 색칠, 표·열 자동 완성(입력하면 뜨고 Tab·Enter로 넣기), Ctrl+Enter 실행, Alt+X 스크립트 실행
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
+import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { MSSQL, MySQL, MariaSQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
 import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language'
@@ -11,9 +11,16 @@ import {
   placeholder as placeholderExt, rectangularSelection,
 } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
-import type { DriverKind } from '../../../shared/types'
+import { dialectOf, type DriverKind } from '../../../shared/types'
+import { columnCompletion } from './sqlComplete'
 
 const DIALECT: Record<DriverKind, SQLDialect> = { sqlite: SQLite, mysql: MySQL, mariadb: MariaSQL, postgres: PostgreSQL, mssql: MSSQL }
+
+/** 방언 + 자동 완성(lang-sql: 표·키워드·표.열 / 우리 것: 문장에 나온 표의 열) */
+const language = (driver: DriverKind, schema?: Record<string, string[]>) => [
+  sql({ dialect: DIALECT[driver], schema, upperCaseKeywords: true }),
+  DIALECT[driver].language.data.of({ autocomplete: columnCompletion(schema, dialectOf(driver)) }),
+]
 
 // 색은 CSS 변수로 (밝은·어두운 화면에 맞춰 styles.css에서 정함)
 const highlight = HighlightStyle.define([
@@ -40,7 +47,12 @@ const theme = EditorView.theme({
   '.cm-selectionMatch': { backgroundColor: 'var(--accent-soft)' },
   '&.cm-focused .cm-matchingBracket': { backgroundColor: 'var(--accent-soft)', outline: '1px solid var(--accent)' },
   '.cm-tooltip': { backgroundColor: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '8px', boxShadow: 'var(--shadow)', overflow: 'hidden' },
+  '.cm-tooltip-autocomplete > ul': { fontFamily: 'var(--mono)', fontSize: '12px', maxHeight: '16em' },
+  '.cm-tooltip-autocomplete > ul > li': { padding: '2px 10px 2px 4px', lineHeight: '1.6' },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: 'var(--accent)', color: '#fff' },
+  '.cm-completionDetail': { color: 'var(--muted)', fontStyle: 'normal', marginLeft: '14px', fontSize: '11px' },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail': { color: 'rgba(255, 255, 255, 0.8)' },
+  '.cm-completionMatchedText': { textDecoration: 'none', fontWeight: '700' },
   '.cm-panels': { backgroundColor: 'var(--surface-2)', color: 'var(--text)', borderColor: 'var(--line)' },
   '.cm-placeholder': { color: 'var(--muted)' },
   '.cm-ran': { backgroundColor: 'var(--ran-bg)' },
@@ -107,8 +119,9 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
             { key: 'Alt-x', run: () => { cb.current.onRunScript?.(); return true } },
             { key: 'Alt-X', run: () => { cb.current.onRunScript?.(); return true } },
           ])),
-          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
-          lang.current.of(sql({ dialect: DIALECT[driver], schema, upperCaseKeywords: true })),
+          // 자동 완성 목록이 떠 있으면 Tab으로 넣기, 아니면 들여쓰기
+          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, { key: 'Tab', run: acceptCompletion }, indentWithTab]),
+          lang.current.of(language(driver, schema)),
           size.current.of(EditorView.theme({ '&': { fontSize: fontSize + 'px' } })),
           ro.current.of([EditorState.readOnly.of(!!readOnly), EditorView.editable.of(!readOnly)]),
           EditorView.updateListener.of((u) => {
@@ -127,7 +140,7 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
   }, [])
 
   useEffect(() => {
-    view.current?.dispatch({ effects: lang.current.reconfigure(sql({ dialect: DIALECT[driver], schema, upperCaseKeywords: true })) })
+    view.current?.dispatch({ effects: lang.current.reconfigure(language(driver, schema)) })
   }, [driver, schema])
 
   useEffect(() => {

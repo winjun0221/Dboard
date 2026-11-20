@@ -9,7 +9,8 @@ const GROUPS = [
     keys: [
       ['Ctrl+Enter', tk('고른 부분, 없으면 커서가 있는 문장 실행')],
       ['Alt+X', tk('스크립트 전체 실행')],
-      ['Ctrl+Space', tk('자동 완성')],
+      ['Ctrl+Space', tk('자동 완성 띄우기 (입력하면 저절로 떠요)')],
+      ['Tab · Enter', tk('자동 완성 넣기')],
       ['Ctrl+/', tk('주석 켜고 끄기')],
       ['Ctrl+F', tk('찾기')],
     ],
@@ -17,6 +18,8 @@ const GROUPS = [
   {
     title: tk('결과·표 데이터'),
     keys: [
+      [tk('끌기'), tk('칸 고르기 (가장자리 밖으로 끌면 그쪽으로 넘어가요)')],
+      [tk('가운데 단추로 끌기'), tk('표를 잡아서 옮기기')],
       ['Ctrl+C', tk('고른 칸 복사')],
       ['Ctrl+Shift+C', tk('열 이름과 함께 복사')],
       ['Enter · F2', tk('칸 고치기')],
@@ -48,7 +51,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             {g.keys.map(([k, label]) => (
               <div key={k} className="shortcut-row">
                 <span>{t(label)}</span>
-                <kbd>{k}</kbd>
+                <kbd>{t(k)}</kbd>
               </div>
             ))}
           </section>
