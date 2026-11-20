@@ -271,11 +271,13 @@ async function columnRows(s: Session, ref: TableRef) {
     `SELECT c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable, dc.definition,
        CASE WHEN EXISTS (SELECT 1 FROM ${sys(db, 'index_columns')} ic JOIN ${sys(db, 'indexes')} i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
          WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id AND ic.column_id = c.column_id) THEN 1 ELSE 0 END,
-       c.is_identity, CAST(ISNULL(ep.value, '') AS nvarchar(4000)), CAST(idc.seed_value AS bigint), CAST(idc.increment_value AS bigint)
+       c.is_identity, CAST(ISNULL(ep.value, '') AS nvarchar(4000)), CAST(idc.seed_value AS bigint), CAST(idc.increment_value AS bigint),
+       c.is_computed, cc.definition, cc.is_persisted
      FROM ${sys(db, 'columns')} c JOIN ${sys(db, 'objects')} o ON o.object_id = c.object_id JOIN ${sys(db, 'schemas')} s ON s.schema_id = o.schema_id
      JOIN ${sys(db, 'types')} t ON t.user_type_id = c.user_type_id
      LEFT JOIN ${sys(db, 'default_constraints')} dc ON dc.object_id = c.default_object_id
      LEFT JOIN ${sys(db, 'identity_columns')} idc ON idc.object_id = c.object_id AND idc.column_id = c.column_id
+     LEFT JOIN ${sys(db, 'computed_columns')} cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
      LEFT JOIN ${sys(db, 'extended_properties')} ep ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.class = 1 AND ep.name = 'MS_Description'
      WHERE s.name = @p1 AND o.name = @p2 ORDER BY c.column_id`,
     [ref.schema || 'dbo', ref.table],
@@ -328,6 +330,7 @@ export const mssqlDriver: DriverModule = {
       pk: bool(x[7]),
       autoIncrement: bool(x[8]),
       comment: str(x[9]),
+      generated: bool(x[12]),
     }))
   },
 
@@ -359,6 +362,8 @@ export const mssqlDriver: DriverModule = {
     }
     const cols = await columnRows(s, ref)
     const lines = cols.rows.map((x) => {
+      // 계산 열: [이름] AS (식) [PERSISTED]
+      if (bool(x[12])) return `  ${q(str(x[0]))} AS ${str(x[13])}${bool(x[14]) ? ' PERSISTED' : ''}`
       const ident = bool(x[8]) ? ` IDENTITY(${str(x[10]) || 1},${str(x[11]) || 1})` : ''
       return `  ${q(str(x[0]))} ${sqlType(str(x[1]), Number(x[2]), Number(x[3]), Number(x[4]))}${ident}${bool(x[5]) ? ' NULL' : ' NOT NULL'}${x[6] !== null ? ' DEFAULT ' + str(x[6]) : ''}`
     })

@@ -118,6 +118,8 @@ export interface ColumnInfo {
   pk: boolean
   autoIncrement: boolean
   comment: string
+  /** 계산 열(GENERATED·AS 식) — 값을 넣을 수 없음 */
+  generated?: boolean
 }
 
 export interface IndexInfo {
@@ -215,6 +217,36 @@ export interface ExportResult {
   rows: number
 }
 
+// ───────── SQL 덤프·SQL 파일 실행 ─────────
+
+export interface DumpOptions {
+  /** CREATE 문 (표·뷰·인덱스) */
+  structure: boolean
+  /** INSERT 문 (표만) */
+  data: boolean
+  /** 맨 앞에 DROP … IF EXISTS */
+  drop: boolean
+  /** INSERT 한 문장에 넣을 행 수 (SQL Server는 1000까지) */
+  batch: number
+}
+
+export interface DumpObject {
+  name: string
+  kind: ObjectKind
+}
+
+export interface DumpResult {
+  path: string
+  tables: number
+  views: number
+  rows: number
+}
+
+export interface SqlFileResult {
+  statements: number
+  ms: number
+}
+
 // ───────── 실행 기록·설정·업데이트 ─────────
 
 export interface HistoryEntry {
@@ -301,6 +333,11 @@ export interface Api {
   exportQueryCsv(connId: string, tabKey: string, db: string, schema: string, sql: string, o: CsvWriteOptions, defaultName: string): Promise<ExportResult | null>
   exportTableCsv(connId: string, ref: TableRef, filter: string, order: SortKey[], o: CsvWriteOptions): Promise<ExportResult | null>
   pickCsv(): Promise<string | null>
+  /** 표·뷰를 구조(DDL)·데이터(INSERT)로 .sql 파일에 쓰기. tabKey로 취소(cancelSql) */
+  exportDump(connId: string, tabKey: string, db: string, schema: string, objects: DumpObject[], o: DumpOptions, name: string): Promise<DumpResult | null>
+  pickSqlFile(): Promise<string | null>
+  /** .sql 파일을 문장마다 차례로 실행 (오류 나면 멈춤). tabKey로 취소 */
+  runSqlFile(connId: string, tabKey: string, db: string, schema: string, path: string): Promise<SqlFileResult>
   previewCsv(path: string, o: CsvReadOptions): Promise<CsvPreview>
   importCsv(connId: string, ref: TableRef, path: string, o: ImportOptions): Promise<number>
 
@@ -321,7 +358,7 @@ export const API_METHODS = [
   'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion',
   'runSql', 'cancelSql', 'closeSession', 'history', 'clearHistory',
   'tableData', 'countRows', 'applyChanges',
-  'saveCsv', 'exportQueryCsv', 'exportTableCsv', 'pickCsv', 'previewCsv', 'importCsv',
+  'saveCsv', 'exportQueryCsv', 'exportTableCsv', 'pickCsv', 'previewCsv', 'importCsv', 'exportDump', 'pickSqlFile', 'runSqlFile',
   'settings', 'saveSettings', 'appInfo', 'copyText', 'updateStatus', 'checkForUpdates', 'installUpdate', 'openUrl',
 ] as const satisfies readonly (keyof Api)[]
 

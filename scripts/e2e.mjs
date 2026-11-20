@@ -53,7 +53,8 @@ const app = await electron.launch({ executablePath: electronPath, args: ['.'], e
 const shot = async (win, name) => {
   await win.evaluate(() => document.querySelectorAll('.toast .icon-btn').forEach((b) => b.click())).catch(() => {})
   await win.waitForTimeout(150)
-  await win.screenshot({ path: path.join(out, name) })
+  // 스크린샷은 확인용이라 찍다가 멈춰도(창이 가려져 그리기가 늦을 때) 시험은 이어 간다
+  await win.screenshot({ path: path.join(out, name), timeout: 10_000 }).catch((e) => console.log(`(스크린샷 건너뜀: ${name} — ${String(e).split('\n')[0]})`))
 }
 
 /** 파일 고르기·저장 창 대신 정해 둔 경로를 돌려준다 */
@@ -316,6 +317,7 @@ try {
   await win.keyboard.press('Control+a')
   await win.keyboard.insertText('SELECT o.*, o.*, o.*, o.*, o.*, o.* FROM orders o')
   await win.keyboard.press('Control+Enter')
+  check('autocomplete closes on run', await until(async () => (await win.locator('.cm-tooltip-autocomplete').count()) === 0))
   const rgrid = ed.locator('.result-view .grid')
   await rgrid.waitFor()
   const gscroll = () => rgrid.evaluate((el) => ({ left: el.scrollLeft, top: el.scrollTop }))
@@ -363,6 +365,37 @@ try {
   await shot(win, '10-import.png')
   await submit()
   check('csv imported (EUC-KR, quoted comma, empty→NULL)', await until(() => sql("SELECT city FROM customers WHERE name = '성춘향, 남원'")[0]?.city === null && sql("SELECT COUNT(*) AS n FROM customers WHERE name = '홍길동'")[0].n === 1))
+
+  // ── SQL 덤프 내보내기 → SQL 파일 실행으로 다시 넣기 ──
+  const counts = () => ['customers', 'orders', 'notes'].map((tb) => sql(`SELECT COUNT(*) AS n FROM ${tb}`)[0].n).join(',')
+  const countsBefore = counts()
+  const dumpFile = path.join(out, 'shop-dump.sql')
+  await win.locator('.tree-row[data-key^="d:"]').first().click({ button: 'right' })
+  await win.locator('.ctx-menu .menu-item', { hasText: 'SQL 덤프 내보내기' }).click()
+  check('dump dialog lists tables and views', await until(async () => (await win.locator('.dump-item').count()) === 4), String(await win.locator('.dump-item').count()))
+  await shot(win, '10b-dump.png')
+  await nextDialog('save', dumpFile)
+  await submit()
+  check('dump saved', await until(async () => fs.existsSync(dumpFile) && (await win.locator('.toast', { hasText: '덤프를 저장했어요' }).count()) > 0))
+  const dumped = fs.readFileSync(dumpFile, 'utf8')
+  check('dump has DDL, data and views', dumped.includes('CREATE TABLE') && dumped.includes('INSERT INTO "orders"') && dumped.includes('CREATE VIEW') && dumped.includes('DROP TABLE IF EXISTS'))
+  await win.locator('.tree-row[data-key^="d:"]').first().click({ button: 'right' })
+  await win.locator('.ctx-menu .menu-item', { hasText: 'SQL 파일 실행' }).click()
+  await nextDialog('open', dumpFile)
+  await win.locator('.dialog button', { hasText: '파일 고르기' }).click()
+  await until(async () => (await win.locator('.dialog input.mono').inputValue()).endsWith('shop-dump.sql'))
+  await submit()
+  check('run SQL file (restore dump)', await until(async () => (await win.locator('.toast', { hasText: 'SQL 파일을 실행했어요' }).count()) > 0, 15000))
+  check('data same after restore', counts() === countsBefore, `${countsBefore} → ${counts()}`)
+  // DB 전체 DDL만 (오른쪽 클릭 → DDL 내보내기)
+  const ddlFile = path.join(out, 'shop-ddl.sql')
+  await win.locator('.tree-row[data-key^="d:"]').first().click({ button: 'right' })
+  await win.locator('.ctx-menu .menu-item', { hasText: 'DDL 내보내기' }).click()
+  check('DDL export opens with structure only', await until(async () => (await win.locator('.dialog h2', { hasText: 'DDL 내보내기' }).count()) === 1 && (await win.locator('.choice.on', { hasText: '구조만' }).count()) === 1))
+  await nextDialog('save', ddlFile)
+  await submit()
+  check('DDL file has CREATE only', await until(() => fs.existsSync(ddlFile)) && /CREATE TABLE[\s\S]*CREATE VIEW/.test(fs.readFileSync(ddlFile, 'utf8')) && !fs.readFileSync(ddlFile, 'utf8').includes('INSERT INTO'))
+  check('table data bar has SQL export', (await custPane.locator('.data-bar button', { hasText: 'SQL' }).count()) === 1)
 
   // ── 실행 기록 ──
   await win.locator('.panel-tab', { hasText: '실행 기록' }).click()

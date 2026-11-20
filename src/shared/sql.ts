@@ -292,3 +292,14 @@ export function referencedTables(sql: string, d: Dialect): string[] {
   }
   return out
 }
+
+/** DDL의 REFERENCES 뒤 표 이름들 (덤프에서 부모 표를 먼저 만들려고) */
+export function ddlReferences(ddl: string, d: Dialect): string[] {
+  const masked = mask(ddl, d)
+  const out = new Set<string>()
+  for (const k of masked.matchAll(/\bREFERENCES\b/gi)) {
+    const r = readName(ddl, masked, k.index + k[0].length)
+    if (r) out.add(r.name)
+  }
+  return [...out]
+}

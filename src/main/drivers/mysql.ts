@@ -226,6 +226,7 @@ export const mysqlDriver: DriverModule = {
       pk: str(x[4]) === 'PRI',
       autoIncrement: /auto_increment/i.test(str(x[5])),
       comment: str(x[6]),
+      generated: /\b(VIRTUAL|STORED) GENERATED\b/i.test(str(x[5])),
     }))
   },
 

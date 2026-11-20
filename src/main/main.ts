@@ -10,9 +10,10 @@ import { API_METHODS, dialectOf, type Api, type AppSettings, type ConnectionConf
 import { Manager, type Resolved } from './conn'
 import { setSqliteWorkerCode } from './drivers/sqlite'
 import {
-  allowFile, checkCell, checkChanges, checkConfig, checkCsvRead, checkCsvWrite, checkDataQuery, checkId, checkImport, checkInt,
+  allowFile, checkCell, checkChanges, checkConfig, checkCsvRead, checkCsvWrite, checkDataQuery, checkDumpObjects, checkDumpOptions, checkId, checkImport, checkInt,
   checkName, checkOneOf, checkPickedFile, checkRef, checkSecrets, checkSort, checkSql, checkTabKey, checkText, validateForConnect,
 } from './guard'
+import * as dump from './dump'
 import * as ops from './ops'
 import { Store } from './store'
 import { keyNeedsPassphrase } from './tunnel'
@@ -158,6 +159,7 @@ async function saveAs(title: string, defaultName: string, filters: Electron.File
 }
 
 const CSV_FILTER = [{ name: 'CSV', extensions: ['csv', 'txt', 'tsv'] }]
+const SQL_FILTER = [{ name: 'SQL', extensions: ['sql'] }]
 
 // ───────── IPC ─────────
 
@@ -335,6 +337,52 @@ const handlers: Handlers = {
     const file = await saveAs(t('CSV로 내보내기'), r.table + '.csv', CSV_FILTER)
     if (!file) return null
     return { path: file, rows: await ops.exportTable(live, r, checkText(filter ?? '', 100_000), checkSort(order ?? []), file, opts) }
+  },
+  // SQL 덤프·SQL 파일 실행 (따로 연결을 열어 탐색기·편집기를 막지 않고, tabKey로 취소)
+  exportDump: async (id, tabKey, db, schema, objects, o, name) => {
+    const cid = checkConnId(id)
+    const live = manager.get(cid)
+    const key = checkTabKey(tabKey)
+    const list = checkDumpObjects(objects)
+    const opts = checkDumpOptions(o)
+    if (list.length === 0) throw new Error(t('내보낼 표를 골라 주세요'))
+    const d = checkName(db)
+    const sc = checkName(schema)
+    const file = await saveAs(t('SQL 덤프 저장'), checkText(name, 200) + '.sql', SQL_FILTER)
+    if (!file) return null
+    const s = await manager.editorSession(cid, key, d, sc)
+    try {
+      const r = await dump.writeDump(s, live.mod, d || live.defaultDb, sc, list, file, opts, { conn: live.config.name, version: live.version })
+      return { path: file, ...r }
+    } finally {
+      await manager.closeEditor(key)
+    }
+  },
+  pickSqlFile: async () => {
+    const r = await dialog.showOpenDialog(win!, { title: t('SQL 파일 고르기'), properties: ['openFile'], filters: [...SQL_FILTER, { name: t('모든 파일'), extensions: ['*'] }] })
+    if (r.canceled || r.filePaths.length === 0) return null
+    allowFile(r.filePaths[0])
+    return r.filePaths[0]
+  },
+  runSqlFile: async (id, tabKey, db, schema, file) => {
+    const cid = checkConnId(id)
+    const live = manager.get(cid)
+    const key = checkTabKey(tabKey)
+    const f = checkPickedFile(file)
+    const d = checkName(db)
+    const s = await manager.editorSession(cid, key, d, checkName(schema))
+    const t0 = performance.now()
+    const base = { at: Date.now(), connId: cid, connName: live.config.name, db: d || live.defaultDb, sql: `-- ${t('SQL 파일 실행')}: ${path.basename(f)}` }
+    try {
+      const r = await dump.runSqlFile(s, live.mod.dialect, f)
+      store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows: null, error: null })
+      return r
+    } catch (e) {
+      store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows: null, error: e instanceof Error ? e.message : String(e) })
+      throw e
+    } finally {
+      await manager.closeEditor(key)
+    }
   },
   pickCsv: async () => {
     const r = await dialog.showOpenDialog(win!, { title: t('CSV 파일 고르기'), properties: ['openFile'], filters: [...CSV_FILTER, { name: t('모든 파일'), extensions: ['*'] }] })

@@ -4,8 +4,25 @@ import path from 'node:path'
 import { t } from '../shared/i18n'
 import {
   CSV_DELIMITERS, DRIVER_KINDS, type Cell, type ConnectionConfig, type CsvReadOptions, type CsvWriteOptions, type DataQuery, type ImportOptions,
-  type RowChange, type SecretsInput, type SortKey, type TableRef,
+  type DumpObject, type DumpOptions, type RowChange, type SecretsInput, type SortKey, type TableRef,
 } from '../shared/types'
+
+export function checkDumpOptions(v: unknown): DumpOptions {
+  const o = checkObject(v)
+  const r = { structure: checkBool(o.structure), data: checkBool(o.data), drop: checkBool(o.drop), batch: checkInt(o.batch, 1, 10_000) }
+  if (!r.structure && !r.data) throw new Error(t('구조와 데이터 중 하나는 골라 주세요'))
+  return r
+}
+
+export function checkDumpObjects(v: unknown): DumpObject[] {
+  if (!Array.isArray(v) || v.length > 20_000) throw new Error(t('잘못된 요청'))
+  return v.map((x) => {
+    const o = checkObject(x)
+    const name = checkName(o.name)
+    if (!name) throw new Error(t('잘못된 요청'))
+    return { name, kind: checkOneOf(o.kind, ['table', 'view'] as const) }
+  })
+}
 
 /** 이번 실행에서 사용자가 파일 고르기 창으로 고른 파일 (CSV 가져오기) */
 const picked = new Set<string>()

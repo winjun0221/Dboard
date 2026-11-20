@@ -78,6 +78,7 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
     if (running) return
     const h = ed.current
     if (!h) return
+    h.closePopups()
     const text = h.text()
     const sel = h.selection()
     let pieces: string[]

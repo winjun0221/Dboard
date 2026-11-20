@@ -182,6 +182,8 @@ export const sqliteDriver: DriverModule = {
           // INTEGER PRIMARY KEY 하나면 rowid 별칭 = 자동 번호
           autoIncrement: pk && pkCount === 1 && type.toUpperCase() === 'INTEGER',
           comment: '',
+          // 2 = VIRTUAL, 3 = STORED 계산 열
+          generated: Number(row[5]) >= 2,
         }
       })
   },

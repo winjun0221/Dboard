@@ -2,7 +2,7 @@
 import { useRef, useState, type MouseEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  CircleHelp, ExternalLink, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database,
+  CircleHelp, DatabaseBackup, ExternalLink, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database,
 } from 'lucide-react'
 import type { AppSettings } from '../../../shared/types'
 import { api, errorText } from '../api'
@@ -13,6 +13,8 @@ import { editorActions } from '../editors'
 import { tabTitle, type ShellActions } from '../App'
 import UpdateChip from './UpdateChip'
 import { ShortcutsDialog } from '../dialogs/ShortcutsDialog'
+import { DumpDialog } from '../dialogs/DumpDialog'
+import { RunFileDialog } from '../dialogs/RunFileDialog'
 
 type MenuName = 'file' | 'view' | 'sql' | 'help'
 
@@ -47,6 +49,16 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
     }
   }
 
+  // 지금 탭의 접속·DB·스키마 (덤프·SQL 파일 실행 대상)
+  const here = activeTab
+    ? activeTab.kind === 'editor'
+      ? { connId: activeTab.connId, db: activeTab.db, schema: activeTab.schema, table: undefined }
+      : { connId: activeTab.connId, db: activeTab.ref.db, schema: activeTab.ref.schema, table: activeTab.ref.table }
+    : null
+  const withConn = async (fn: (h: NonNullable<typeof here>) => void) => {
+    if (here && (await ws.ensureConnected(here.connId))) fn(here)
+  }
+
   const items = (name: MenuName): MenuItem[] => {
     const ed = editorActions(activeTab?.kind === 'editor' ? activeTab.id : null)
     switch (name) {
@@ -54,6 +66,10 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
         return [
           { label: t('새 연결…'), icon: Plus, onClick: () => ws.editConnection() },
           { label: t('새 SQL 편집기'), icon: SquareTerminal, hint: 'Ctrl+]', onClick: actions.newEditor },
+          'sep',
+          { label: t('DDL 내보내기…'), icon: ScrollText, disabled: !here?.db, onClick: () => void withConn((h) => ui.open((close) => <DumpDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} content="structure" onClose={close} />)) },
+          { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, disabled: !here?.db, onClick: () => void withConn((h) => ui.open((close) => <DumpDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} only={h.table} onClose={close} />)) },
+          { label: t('SQL 파일 실행…'), icon: FilePlay, disabled: !here, onClick: () => void withConn((h) => ui.open((close) => <RunFileDialog conn={ws.conn(h.connId)!} ensureConnected={() => ws.ensureConnected(h.connId)} db={h.db} schema={h.schema} onClose={close} />)) },
           'sep',
           { label: t('탭 닫기'), icon: X, hint: 'Ctrl+W', disabled: !activeTab, onClick: () => activeTab && void ws.closeTab(activeTab.id) },
           { label: t('다른 탭 모두 닫기'), disabled: ws.tabs.length < 2 || !activeTab, onClick: () => activeTab && ws.closeOthers(activeTab.id) },

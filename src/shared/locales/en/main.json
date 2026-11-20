@@ -52,5 +52,16 @@
   "업데이트 주소에 latest.yml이 없어요": "latest.yml was not found at the update address",
   "받기 끝: {version} (다시 시작하거나 앱을 끄면 설치)": "Downloaded {version} (installs on restart or when the app closes)",
   "바이너리 값은 여기서 바꿀 수 없어요": "Binary values can't be edited here",
-  "행을 찾을 열이 없어요": "No columns to identify the row"
+  "행을 찾을 열이 없어요": "No columns to identify the row",
+  "DBoard SQL 덤프": "DBoard SQL dump",
+  "접속": "Connection",
+  "표 {t}개 · 뷰 {v}개 · {kinds}": "{t} tables · {v} views · {kinds}",
+  "트리거": "Triggers",
+  "SQL 덤프 저장": "Save SQL dump",
+  "SQL 파일 고르기": "Choose a SQL file",
+  "SQL 파일 실행": "Run SQL file",
+  "SQL 파일이 너무 커요 (256MB까지)": "The SQL file is too large (up to 256 MB)",
+  "{name}: {n}번째 문장({line}번째 줄)에서 멈췄어요. 앞의 {done}개는 실행됐어요(트랜잭션 안이면 되돌렸어요).\n{error}": "{name}: stopped at statement {n} (line {line}). The {done} statements before it ran (rolled back if they were in a transaction).\n{error}",
+  "구조와 데이터 중 하나는 골라 주세요": "Choose structure, data or both",
+  "내보낼 표를 골라 주세요": "Choose tables to export"
 }

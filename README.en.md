@@ -32,6 +32,7 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 - **Result grid** — smooth with tens of thousands of rows, click to sort, copy cells or ranges (paste straight into Excel), CSV export
 - **Edit table data** — edit cells, add and delete rows, undo (`Ctrl+Z`), preview the SQL before saving, save in one transaction (everything is rolled back if anything fails)
 - **DDL and CSV import** — view and copy the CREATE statement, import CSV (UTF-8 and EUC-KR detected automatically, column mapping)
+- **SQL dump and SQL files** — export a database, schema or table as structure (DDL) and data (INSERT) into a `.sql` file (foreign-key order, auto-increment values and computed columns handled so it loads into another database), and run a `.sql` file statement by statement (stops and rolls back on error)
 - Korean and English UI, light and dark themes
 
 ![Editing table data](docs/data.png)

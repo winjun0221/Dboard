@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  ClipboardCopy, Download, Filter, KeyRound, ListPlus, LoaderCircle, Lock, Pencil, Plus, RefreshCw, Save, Sigma, Trash2, Undo2, Upload, X, Eraser,
+  ClipboardCopy, DatabaseBackup, Download, Filter, KeyRound, ListPlus, LoaderCircle, Lock, Pencil, Plus, RefreshCw, Save, Sigma, Trash2, Undo2, Upload, X, Eraser,
 } from 'lucide-react'
 import type { Cell, ObjectKind, RowChange, SortKey, TableData, TableRef } from '../../../shared/types'
 import { dialectOf, isBin } from '../../../shared/types'
@@ -19,6 +19,7 @@ import { ExportDialog } from '../dialogs/ExportDialog'
 import { ImportDialog } from '../dialogs/ImportDialog'
 import { PreviewDialog } from '../dialogs/PreviewDialog'
 import { ValueDialog } from '../dialogs/ValueDialog'
+import { DumpDialog } from '../dialogs/DumpDialog'
 
 interface Pending {
   /** 원래 행 → 열 → 새 값 */
@@ -306,7 +307,8 @@ export function DataView({ tabId, connId, target, objKind, active }: { tabId: st
           </>
         )}
         <span className="spacer" />
-        <button className="tbtn" onClick={doExport} disabled={!data}><Download />{t('CSV')}</button>
+        <button className="tbtn" onClick={doExport} disabled={!data} title={t('CSV로 내보내기')}><Download />{t('CSV')}</button>
+        <button className="tbtn" onClick={() => conn && ui.open((close) => <DumpDialog conn={conn} db={target.db} schema={target.schema} only={target.table} onClose={close} />)} title={t('이 표를 CREATE·INSERT 문으로 내보내기')}><DatabaseBackup />SQL</button>
         {!readOnly && <button className="tbtn" onClick={doImport}><Upload />{t('가져오기')}</button>}
       </div>
       {keyKind === 'all' && !readOnly && <div className="banner warn"><KeyRound />{t('기본 키가 없는 표예요. 고치거나 지울 때 모든 열 값이 같은 행 하나를 찾아요.')}</div>}

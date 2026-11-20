@@ -1,6 +1,6 @@
 // SQL 편집기 (CodeMirror 6): 방언별 문법 색칠, 표·열 자동 완성(입력하면 뜨고 Tab·Enter로 넣기), Ctrl+Enter 실행, Alt+X 스크립트 실행
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
-import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
+import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, closeCompletion, completionKeymap } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { MSSQL, MySQL, MariaSQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
 import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language'
@@ -46,7 +46,8 @@ const theme = EditorView.theme({
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: 'var(--sel-bg) !important' },
   '.cm-selectionMatch': { backgroundColor: 'var(--accent-soft)' },
   '&.cm-focused .cm-matchingBracket': { backgroundColor: 'var(--accent-soft)', outline: '1px solid var(--accent)' },
-  '.cm-tooltip': { backgroundColor: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '8px', boxShadow: 'var(--shadow)', overflow: 'hidden' },
+  // 대화 상자(.dialog-backdrop z-index 200) 아래로
+  '.cm-tooltip': { zIndex: '150', backgroundColor: 'var(--surface)', border: '1px solid var(--line)', borderRadius: '8px', boxShadow: 'var(--shadow)', overflow: 'hidden' },
   '.cm-tooltip-autocomplete > ul': { fontFamily: 'var(--mono)', fontSize: '12px', maxHeight: '16em' },
   '.cm-tooltip-autocomplete > ul > li': { padding: '2px 10px 2px 4px', lineHeight: '1.6' },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: 'var(--accent)', color: '#fff' },
@@ -67,6 +68,8 @@ export interface SqlEditorHandle {
   insert(text: string): void
   setText(text: string): void
   focus(): void
+  /** 자동 완성 목록 닫기 */
+  closePopups(): void
 }
 
 export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeholder, onChange, onRun, onRunScript, handle }: {
@@ -115,9 +118,10 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
           theme,
           placeholder ? placeholderExt(placeholder) : [],
           Prec.highest(keymap.of([
-            { key: 'Mod-Enter', run: () => { cb.current.onRun?.(); return true } },
-            { key: 'Alt-x', run: () => { cb.current.onRunScript?.(); return true } },
-            { key: 'Alt-X', run: () => { cb.current.onRunScript?.(); return true } },
+            // 실행하면 자동 완성 목록은 닫는다 (뜬 채로 남아 다른 화면 위에 겹치지 않게)
+            { key: 'Mod-Enter', run: (v) => { closeCompletion(v); cb.current.onRun?.(); return true } },
+            { key: 'Alt-x', run: (v) => { closeCompletion(v); cb.current.onRunScript?.(); return true } },
+            { key: 'Alt-X', run: (v) => { closeCompletion(v); cb.current.onRunScript?.(); return true } },
           ])),
           // 자동 완성 목록이 떠 있으면 Tab으로 넣기, 아니면 들여쓰기
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, { key: 'Tab', run: acceptCompletion }, indentWithTab]),
@@ -181,6 +185,9 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
       v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } })
     },
     focus: () => view.current?.focus(),
+    closePopups: () => {
+      if (view.current) closeCompletion(view.current)
+    },
   }))
 
   return <div className="sql-editor" ref={host} />

@@ -1,7 +1,7 @@
 // 왼쪽 탐색기: 접속 → DB → (스키마) → 표·뷰 묶음 → 표 → 열·인덱스. 펼칠 때 읽고, 새로고침 전까지 기억
 import { useState, type MouseEvent, type ReactNode } from 'react'
 import {
-  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, Eye, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, Plug, Plus,
+  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, Plug, Plus,
   RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -13,6 +13,8 @@ import { t } from '../i18n'
 import { connSummary } from '../format'
 import { DriverBadge } from './DriverBadge'
 import { ImportDialog } from '../dialogs/ImportDialog'
+import { DumpDialog } from '../dialogs/DumpDialog'
+import { RunFileDialog } from '../dialogs/RunFileDialog'
 
 const EXPAND_KEY = 'dboard.tree.expanded'
 
@@ -110,6 +112,7 @@ function saveExpanded(n: Set<string>) {
 
 export function Navigator() {
   const ws = useWs()
+  const ui = useUi()
   const refresh = useRefreshConn()
   const [expanded, setExpanded] = useState(loadExpanded)
   const [sel, setSel] = useState<{ key: string; meta?: SelMeta } | null>(null)
@@ -153,7 +156,18 @@ export function Navigator() {
         <span className="tool-sep" />
         <button className="icon-btn small" title={t('새 SQL 편집기')} disabled={!meta} onClick={() => void newEditorSel()}><SquareTerminal /></button>
         <button className="icon-btn small" title={t('데이터 보기')} disabled={!tableRef} onClick={() => meta && tableRef && ws.openTable(meta.connId, tableRef, meta.kind ?? 'table', 'data')}><Table2 /></button>
-        <button className="tool-text" title={t('DDL 보기')} disabled={!tableRef} onClick={() => meta && tableRef && ws.openTable(meta.connId, tableRef, meta.kind ?? 'table', 'ddl')}>DDL</button>
+        {/* 표를 고르면 그 표의 DDL, DB·스키마를 고르면 전체 DDL 내보내기 */}
+        <button
+          className="tool-text"
+          title={tableRef ? t('DDL 보기') : t('DDL 내보내기…')}
+          disabled={!tableRef && (!selOn || meta?.db === undefined)}
+          onClick={() => {
+            if (!meta) return
+            if (tableRef) ws.openTable(meta.connId, tableRef, meta.kind ?? 'table', 'ddl')
+            else if (meta.db !== undefined) ui.open((close) => <DumpDialog conn={ws.conn(meta.connId)!} db={meta.db!} schema={meta.schema ?? ''} content="structure" onClose={close} />)
+          }}
+        >DDL</button>
+        <button className="icon-btn small" title={t('SQL 덤프 내보내기…')} disabled={!selOn || meta?.db === undefined} onClick={() => meta && meta.db !== undefined && ui.open((close) => <DumpDialog conn={ws.conn(meta.connId)!} db={meta.db!} schema={meta.schema ?? ''} only={meta.table} onClose={close} />)}><DatabaseBackup /></button>
         <span className="spacer" />
         <button className="icon-btn small" title={t('모두 접기')} onClick={collapseAll}><ChevronsDownUp /></button>
       </div>
@@ -244,6 +258,12 @@ function DbNode({ c, db, hasSchemas, ctx }: { c: ConnectionInfo; db: string; has
   const def = defaultContext(c)
   const menu = (e: MouseEvent) => ui.menu(e, [
     { label: t('새 SQL 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db, schema: hasSchemas ? def.schema : '' }) },
+    'sep',
+    // 스키마가 있는 DB(PostgreSQL·SQL Server)는 스키마에서 덤프
+    !hasSchemas && { label: t('DDL 내보내기…'), icon: ScrollText, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema="" content="structure" onClose={close} />) },
+    !hasSchemas && { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema="" onClose={close} />) },
+    { label: t('SQL 파일 실행…'), icon: FilePlay, onClick: () => ui.open((close) => <RunFileDialog conn={c} ensureConnected={() => ws.ensureConnected(c.id)} db={db} schema={hasSchemas ? def.schema : ''} onClose={close} />) },
+    'sep',
     { label: t('이름 복사'), icon: Copy, onClick: () => void api.copyText(db) },
   ])
   return (
@@ -264,6 +284,11 @@ function SchemaNode({ c, db, schema, ctx }: { c: ConnectionInfo; db: string; sch
   const open = ctx.expanded.has(k)
   const menu = (e: MouseEvent) => ui.menu(e, [
     { label: t('새 SQL 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db, schema }) },
+    'sep',
+    { label: t('DDL 내보내기…'), icon: ScrollText, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema={schema} content="structure" onClose={close} />) },
+    { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema={schema} onClose={close} />) },
+    { label: t('SQL 파일 실행…'), icon: FilePlay, onClick: () => ui.open((close) => <RunFileDialog conn={c} ensureConnected={() => ws.ensureConnected(c.id)} db={db} schema={schema} onClose={close} />) },
+    'sep',
     { label: t('이름 복사'), icon: Copy, onClick: () => void api.copyText(schema) },
   ])
   return (
@@ -322,6 +347,7 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
       { label: t('SELECT 문으로 새 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db: ref2.db, schema: ref2.schema, text: selectSql() }) },
       !isView && { label: t('CSV 가져오기…'), icon: Upload, onClick: () => ui.open((close) => <ImportDialog connId={c.id} target={ref2} onClose={close} onDone={() => void qc.invalidateQueries({ queryKey: ['table-data', c.id] })} />) },
       { label: t('CSV로 내보내기…'), icon: Download, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'data') },
+      { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={ref2.db} schema={ref2.schema} only={obj.name} onClose={close} />) },
       'sep',
       { label: t('이름 복사'), icon: Copy, onClick: () => void api.copyText(obj.name) },
       { label: t('새로고침'), icon: RefreshCw, onClick: () => {
