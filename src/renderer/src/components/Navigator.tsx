@@ -1,5 +1,5 @@
 // 왼쪽 탐색기: 접속 → DB → (스키마) → 표·뷰 묶음 → 표 → 열·인덱스. 펼칠 때 읽고, 새로고침 전까지 기억
-import { useState, type MouseEvent, type ReactNode } from 'react'
+import { useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import {
   ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, Plug, Plus,
   RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download,
@@ -35,16 +35,32 @@ interface SelMeta {
   kind?: ObjectKind
 }
 
+/** 키보드로 움직일 때 쓰는 줄 정보 (그릴 때마다 채움) */
+interface RowEntry {
+  meta?: SelMeta
+  depth: number
+  expandable: boolean
+  open: boolean
+  toggle(): void
+  /** Enter·더블클릭: 표는 데이터 열기, 묶음은 펼치기·접기 */
+  activate(): void
+}
+
 interface TreeCtx {
   expanded: Set<string>
   toggle(key: string, open?: boolean): void
   selected: string | null
   select(key: string, meta?: SelMeta): void
   filter: string
+  rows: Map<string, RowEntry>
 }
 
-function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, onMenu, onDouble, title, className, open: openProp, onToggle, meta }: {
+// 누르기: 고르기 + (묶음은) 펼치기·접기. chevronOnly인 줄(표·뷰)은 화살표를 눌러야 펼치고, 더블클릭은 바로 연다.
+// 더블클릭의 두 번째 누르기(detail 2)는 펼침을 되돌리지 않는다.
+function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, onMenu, onDouble, title, className, open: openProp, onToggle, meta, chevronOnly }: {
   meta?: SelMeta
+  /** 화살표를 눌렀을 때만 펼치기 (표·뷰: 한 번 누르면 고르기만) */
+  chevronOnly?: boolean
   /** 펼침 상태를 바깥에서 정할 때 (처음부터 펼친 묶음) */
   open?: boolean
   onToggle?: () => void
@@ -63,6 +79,12 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
   className?: string
 }) {
   const open = openProp ?? ctx.expanded.has(k)
+  const toggle = () => {
+    if (onToggle) onToggle()
+    else ctx.toggle(k)
+    if (!open) onOpen?.()
+  }
+  ctx.rows.set(k, { meta, depth, expandable, open, toggle, activate: onDouble ?? (expandable ? toggle : () => undefined) })
   return (
     <div
       className={`tree-row ${ctx.selected === k ? 'sel' : ''} ${className ?? ''}`}
@@ -72,13 +94,11 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
       aria-selected={ctx.selected === k}
       data-key={k}
       title={title}
-      onClick={() => {
+      onClick={(e) => {
         ctx.select(k, meta)
-        if (expandable) {
-          if (onToggle) onToggle()
-          else ctx.toggle(k)
-          if (!open) onOpen?.()
-        }
+        if (!expandable || e.detail > 1) return
+        if (chevronOnly && !(e.target as HTMLElement).closest('.tree-chev')) return
+        toggle()
       }}
       onDoubleClick={onDouble}
       onContextMenu={(e) => {
@@ -127,7 +147,46 @@ export function Navigator() {
       return n
     })
   }
-  const ctx: TreeCtx = { expanded, toggle, selected: sel?.key ?? null, select: (key, meta) => setSel({ key, meta }), filter: filter.trim().toLowerCase() }
+  const rows = useRef(new Map<string, RowEntry>()).current
+  const ctx: TreeCtx = { expanded, toggle, selected: sel?.key ?? null, select: (key, meta) => setSel({ key, meta }), filter: filter.trim().toLowerCase(), rows }
+
+  // 키보드: ↑↓ 줄 옮기기, → 펼치기(펼쳐 있으면 아래로), ← 접기(접혀 있으면 위 묶음으로), Enter 열기, Home·End
+  const onTreeKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const tree = e.currentTarget
+    const keys = [...tree.querySelectorAll<HTMLElement>('.tree-row[data-key]')].map((el) => el.dataset.key!)
+    if (keys.length === 0) return
+    const i = sel ? keys.indexOf(sel.key) : -1
+    const cur = i >= 0 ? rows.get(keys[i]) : undefined
+    const go = (j: number) => {
+      const key = keys[Math.max(0, Math.min(keys.length - 1, j))]
+      setSel({ key, meta: rows.get(key)?.meta })
+      tree.querySelector(`.tree-row[data-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'nearest' })
+    }
+    switch (e.key) {
+      case 'ArrowDown': go(i + 1); break
+      case 'ArrowUp': go(i < 0 ? 0 : i - 1); break
+      case 'Home': go(0); break
+      case 'End': go(keys.length - 1); break
+      case 'ArrowRight':
+        if (cur?.expandable && !cur.open) cur.toggle()
+        else go(i + 1)
+        break
+      case 'ArrowLeft':
+        if (cur?.expandable && cur.open) cur.toggle()
+        else if (cur) {
+          for (let j = i - 1; j >= 0; j--) {
+            if ((rows.get(keys[j])?.depth ?? 0) < cur.depth) {
+              go(j)
+              break
+            }
+          }
+        }
+        break
+      case 'Enter': cur?.activate(); break
+      default: return
+    }
+    e.preventDefault()
+  }
 
   // 도구 줄: 고른 줄의 접속(·DB·표)에 대해
   const meta = sel?.meta && ws.conn(sel.meta.connId) ? sel.meta : undefined
@@ -176,7 +235,7 @@ export function Navigator() {
         <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={t('표 이름 찾기')} spellCheck={false} />
         {filter && <button className="icon-btn small" onClick={() => setFilter('')} aria-label={t('지우기')}><X /></button>}
       </div>
-      <div className="tree" role="tree">
+      <div className="tree" role="tree" tabIndex={0} onKeyDown={onTreeKey}>
         {ws.connections.length === 0 && (
           <div className="tree-intro">
             <p>{t('아직 접속 정보가 없어요.')}</p>
@@ -364,9 +423,10 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
         k={k}
         ctx={ctx}
         meta={{ connId: c.id, db: ref2.db, schema: ref2.schema, table: obj.name, kind: obj.kind }}
+        chevronOnly
         icon={isView ? <Eye className="view-icon" /> : <Table2 className="table-icon" />}
         label={obj.name}
-        title={obj.comment || obj.name}
+        title={`${obj.comment ? obj.comment + '\n' : ''}${t('더블클릭: 데이터 열기 · 화살표: 열·인덱스 보기')}`}
         expandable
         onDouble={() => ws.openTable(c.id, ref2, obj.kind, 'data')}
         onMenu={menu}

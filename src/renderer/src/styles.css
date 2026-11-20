@@ -650,3 +650,9 @@ body.panning, body.panning * { cursor: grabbing !important; user-select: none !i
 .dump-item.off { opacity: 0.45; cursor: default; }
 .dump-list-foot { padding: 5px 10px; border-top: 1px solid var(--line); background: var(--surface-2); border-radius: 0 0 7px 7px; }
 .banner pre { flex: 1; min-width: 0; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
+
+/* 탐색기: 화살표는 눌러서 펼치는 단추, 키보드로 고른 줄은 진하게 */
+.tree-row .tree-chev:not(.none) { cursor: pointer; border-radius: 3px; }
+.tree-row .tree-chev:not(.none):hover { background: var(--active); color: var(--text); }
+.tree:focus { outline: none; }
+.tree:focus .tree-row.sel { background: color-mix(in srgb, var(--accent) 24%, transparent); }

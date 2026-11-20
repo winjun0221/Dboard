@@ -106,8 +106,11 @@ try {
   check('tree lists tables', ['customers', 'notes', 'orders'].every((n) => tables.some((x) => x.includes(n))), tables.join(','))
   await win.locator('.tree-row[data-key^="f:"][data-key$=":view"]').click()
   check('tree lists view', await until(async () => (await win.locator('.tree-row[data-key^="t:"][data-key$=":v_big_orders"]').count()) === 1))
-  // 표 펼치기 → 열·인덱스
+  // 표는 한 번 누르면 고르기만, 화살표를 눌러야 열·인덱스
   await win.locator('.tree-row[data-key^="t:"][data-key$=":orders"]').click()
+  await win.waitForTimeout(300)
+  check('single click on table only selects', (await win.locator('.tree-row[data-key^="tcx:"][data-key$=":orders"]').count()) === 0 && (await win.locator('.tree-row.sel[data-key^="t:"][data-key$=":orders"]').count()) === 1)
+  await win.locator('.tree-row[data-key^="t:"][data-key$=":orders"] .tree-chev').click()
   check('tree shows columns', await until(async () => (await win.locator('.tree-row.leaf', { hasText: 'customer_id' }).count()) > 0))
   await win.locator('.tree-row[data-key^="ti:"]').first().click()
   check('tree shows indexes', await until(async () => (await win.locator('.tree-row.leaf', { hasText: 'ix_orders_status' }).count()) > 0))
@@ -116,6 +119,7 @@ try {
   // ── 표 데이터 ──
   await win.locator('.tree-row[data-key^="t:"][data-key$=":orders"]').dblclick()
   await win.waitForSelector('.data-view .g-row')
+  check('double-click opens data without collapsing', (await win.locator('.tree-row.leaf', { hasText: 'customer_id' }).count()) > 0)
   check('table data loads first page', (await win.locator('.data-foot').innerText()).includes('200행+'))
   // 정렬: total 두 번 = 내림차순
   const totalHead = win.locator('.data-view .g-hcell', { hasText: 'total' })
@@ -139,6 +143,7 @@ try {
   // 고치기: customers
   await win.locator('.tree-row[data-key^="t:"][data-key$=":customers"]').dblclick()
   await win.waitForSelector('.tab.on:has-text("customers")')
+  check('double-click does not expand the table', (await win.locator('.tree-row[data-key^="tcx:"][data-key$=":customers"]').count()) === 0)
   const cust = win.locator('.tab-pane:visible .data-view')
   await cust.locator('.g-row').first().waitFor()
   const nameCell = cust.locator('.g-row').nth(0).locator('.g-cell').nth(1)
@@ -193,7 +198,16 @@ try {
   check('revert all', (await cust.locator('.g-cell.edited').count()) === 0)
 
   // 기본 키 없는 표 (rowid로 찾기)
-  await win.locator('.tree-row[data-key^="t:"][data-key$=":notes"]').dblclick()
+  // 키보드: → 펼치기, ← 접기, Enter 열기
+  await win.locator('.tree-row[data-key^="t:"][data-key$=":notes"]').click()
+  await win.keyboard.press('ArrowRight')
+  check('keyboard → expands', await until(async () => (await win.locator('.tree-row[data-key^="tcx:"][data-key$=":notes"]').count()) === 1))
+  await win.keyboard.press('ArrowLeft')
+  check('keyboard ← collapses', await until(async () => (await win.locator('.tree-row[data-key^="tcx:"][data-key$=":notes"]').count()) === 0))
+  await win.keyboard.press('ArrowUp')
+  await win.keyboard.press('ArrowDown')
+  check('keyboard ↑↓ moves selection', (await win.locator('.tree-row.sel[data-key^="t:"][data-key$=":notes"]').count()) === 1)
+  await win.keyboard.press('Enter')
   await win.waitForSelector('.tab.on:has-text("notes")')
   const notes = win.locator('.tab-pane:visible .data-view')
   await notes.locator('.g-row').first().waitFor()

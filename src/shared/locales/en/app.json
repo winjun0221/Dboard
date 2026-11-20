@@ -110,5 +110,6 @@
   "가운데 단추로 끌기": "Middle-button drag",
   "표를 잡아서 옮기기": "Pan the grid",
   "자동 완성 띄우기 (입력하면 저절로 떠요)": "Show autocomplete (it also opens as you type)",
-  "자동 완성 넣기": "Accept autocomplete"
+  "자동 완성 넣기": "Accept autocomplete",
+  "더블클릭: 데이터 열기 · 화살표: 열·인덱스 보기": "Double-click: open data · arrow: show columns and indexes"
 }
