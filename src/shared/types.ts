@@ -41,6 +41,10 @@ export interface ConnectionConfig {
   /** 시스템 DB·스키마도 보이기 (information_schema, pg_catalog, master 등) */
   showSystem: boolean
   ssh: SshConfig
+  /** 운영 DB: 편집기 기본이 수동 커밋, 데이터를 바꾸는 문장은 실행 전에 한 번 더 묻기, 탭·상태 줄에 빨간 표시 (예전 접속 정보엔 없음 = false) */
+  production?: boolean
+  /** 읽기 전용: 바꾸는 문장·데이터 고치기·가져오기를 막는다 (MySQL·PostgreSQL·SQLite는 서버 설정으로도) */
+  readOnly?: boolean
 }
 
 /** 화면이 보내는 비밀 값. 없는 칸(undefined)은 저장된 값을 그대로 쓴다. 화면으로는 절대 돌려주지 않는다 */
@@ -77,6 +81,12 @@ export const isBin = (v: Cell): v is BinCell => typeof v === 'object' && v !== n
 export interface ResultColumn {
   name: string
   type: string
+}
+
+/** 실행 계획: 글(나무 모양) 또는 표 (MariaDB 등) */
+export interface ExplainResult {
+  text: string | null
+  result: StatementResult | null
 }
 
 export interface StatementResult {
@@ -120,6 +130,14 @@ export interface ColumnInfo {
   comment: string
   /** 계산 열(GENERATED·AS 식) — 값을 넣을 수 없음 */
   generated?: boolean
+}
+
+/** 외래 키: columns → ref 표의 refColumns */
+export interface ForeignKeyInfo {
+  name: string
+  columns: string[]
+  ref: TableRef
+  refColumns: string[]
 }
 
 export interface IndexInfo {
@@ -178,7 +196,15 @@ export type RowChange =
 export type CsvDelimiter = ',' | ';' | '\t' | '|'
 export const CSV_DELIMITERS: readonly CsvDelimiter[] = [',', ';', '\t', '|']
 
+export type ExportFormat = 'csv' | 'json' | 'md' | 'xlsx' | 'sql'
+export const EXPORT_FORMATS: readonly ExportFormat[] = ['csv', 'xlsx', 'json', 'md', 'sql']
+
+/** 내보내기 설정 (CSV 말고 다른 형식도: format) */
 export interface CsvWriteOptions {
+  format: ExportFormat
+  /** SQL(INSERT) 형식에서 넣을 표 이름과 따옴표 방식 */
+  table: string
+  dialect: Dialect
   delimiter: CsvDelimiter
   header: boolean
   /** 엑셀이 한글을 바로 읽게 UTF-8 BOM */
@@ -317,8 +343,19 @@ export interface Api {
   completion(connId: string, db: string, schema: string): Promise<Record<string, string[]>>
 
   // SQL 편집기 (탭마다 DB 연결 하나: tabKey는 화면이 정한 탭 이름)
-  runSql(connId: string, tabKey: string, db: string, schema: string, sql: string, maxRows: number): Promise<StatementResult[]>
+  /** manual = 수동 커밋 (커밋·롤백 전까지 트랜잭션 안) */
+  runSql(connId: string, tabKey: string, db: string, schema: string, sql: string, maxRows: number, manual: boolean): Promise<StatementResult[]>
   cancelSql(tabKey: string): Promise<void>
+  /** 편집기 탭 연결의 트랜잭션 확정·되돌리기 (연결이 없으면 아무것도 안 함) */
+  commitTx(tabKey: string): Promise<void>
+  rollbackTx(tabKey: string): Promise<void>
+  /** 실행하지 않고 실행 계획만 */
+  explain(connId: string, tabKey: string, db: string, schema: string, sql: string, manual: boolean): Promise<ExplainResult>
+  foreignKeys(connId: string, ref: TableRef): Promise<ForeignKeyInfo[]>
+  /** 표의 칸 값 전체 (화면 표에는 바이너리 앞부분만 있다). keyValues는 TableData.key 순서 (rowid면 [rowid]) */
+  cellValue(connId: string, ref: TableRef, keyValues: Cell[], column: string): Promise<Cell>
+  /** 칸 값을 파일로 저장 (바이너리는 그대로, 글은 UTF-8) */
+  saveCellValue(connId: string, ref: TableRef, keyValues: Cell[], column: string, defaultName: string): Promise<string | null>
   closeSession(tabKey: string): Promise<void>
   history(search: string, limit: number): Promise<HistoryEntry[]>
   clearHistory(): Promise<void>
@@ -356,7 +393,7 @@ export const API_METHODS = [
   'listConnections', 'saveConnection', 'deleteConnection', 'duplicateConnection', 'moveConnection', 'testConnection', 'connect',
   'disconnect', 'connectedIds', 'pickSqliteFile', 'pickKeyFile', 'forgetHostKey',
   'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion',
-  'runSql', 'cancelSql', 'closeSession', 'history', 'clearHistory',
+  'runSql', 'cancelSql', 'commitTx', 'rollbackTx', 'explain', 'foreignKeys', 'cellValue', 'saveCellValue', 'closeSession', 'history', 'clearHistory',
   'tableData', 'countRows', 'applyChanges',
   'saveCsv', 'exportQueryCsv', 'exportTableCsv', 'pickCsv', 'previewCsv', 'importCsv', 'exportDump', 'pickSqlFile', 'runSqlFile',
   'settings', 'saveSettings', 'appInfo', 'copyText', 'updateStatus', 'checkForUpdates', 'installUpdate', 'openUrl',
@@ -383,5 +420,7 @@ export function newConnection(driver: DriverKind = 'postgres'): ConnectionConfig
     ssl: driver === 'mssql' ? 'require' : 'off',
     showSystem: false,
     ssh: { enabled: false, host: '', port: 22, user: '', auth: 'password', keyFile: '' },
+    production: false,
+    readOnly: false,
   }
 }

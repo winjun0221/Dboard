@@ -656,3 +656,39 @@ body.panning, body.panning * { cursor: grabbing !important; user-select: none !i
 .tree-row .tree-chev:not(.none):hover { background: var(--active); color: var(--text); }
 .tree:focus { outline: none; }
 .tree:focus .tree-row.sel { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+
+/* 1단계: 트랜잭션·운영 DB·실행 계획·세로 보기·고른 칸 계산·값 보기 */
+.chip.danger { background: var(--del-bg); color: var(--danger); }
+.count.warn { border-color: var(--warn); color: var(--warn); margin-left: 2px; }
+.tbtn.on { background: var(--accent-soft); color: var(--accent); }
+.tbtn.on svg { color: var(--accent); }
+.tbtn.tx-mode.manual { color: var(--warn); }
+.tbtn.tx-mode.manual svg { color: var(--warn); }
+.tbtn.commit svg { color: var(--ok); }
+.tab.prod > .ellipsis:first-of-type { color: var(--danger); }
+.status-prod { color: var(--danger); font-weight: 700; }
+.status-item svg { width: 12px; height: 12px; }
+.checks.safety { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--line); }
+.fk-icon { width: 12px; height: 12px; color: var(--i-schema); flex: none; }
+.rtab svg { width: 13px; height: 13px; }
+.plan-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.plan-sql { display: block; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); font-family: var(--mono); font-size: 11.5px; color: var(--muted); flex: none; }
+.plan-text { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; user-select: text; }
+.plan-error { padding: 10px 14px; }
+.sel-stats { display: inline-flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-2); white-space: nowrap; margin-right: 6px; }
+.sel-stats b { font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+.record-view { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+.record-head { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--surface-2); flex: none; font-size: 12px; }
+.record-body { flex: 1; min-height: 0; overflow: auto; }
+.record-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.record-table th { width: 260px; max-width: 40%; text-align: left; vertical-align: top; padding: 5px 10px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft); border-right: 1px solid var(--line); font-weight: 600; }
+.record-table th .g-htype { display: block; font-weight: 400; }
+.record-table td { padding: 5px 10px; border-bottom: 1px solid var(--line-soft); white-space: pre-wrap; word-break: break-word; user-select: text; font-family: var(--mono); font-size: 12px; }
+.record-table td.null { color: var(--muted); font-style: italic; }
+.record-table td.edited { background: var(--edit-bg); }
+.record-table td.added { background: var(--add-bg); }
+.record-table td.deleted { background: var(--del-bg); text-decoration: line-through; color: var(--muted); }
+.value-pre { max-height: 52vh; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); font-size: 12px; line-height: 1.5; white-space: pre; user-select: text; }
+.value-pre.hex { font-size: 11.5px; }
+.value-image { display: grid; place-items: center; max-height: 56vh; overflow: auto; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--surface) 0 50%) 50% / 16px 16px; }
+.value-image img { max-width: 100%; height: auto; }

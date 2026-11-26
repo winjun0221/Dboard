@@ -10,8 +10,10 @@ import { PasswordDialog } from './dialogs/PasswordDialog'
 import { ConnectionDialog } from './dialogs/ConnectionDialog'
 
 export type TableSub = 'data' | 'columns' | 'indexes' | 'ddl'
-export type EditorTab = { kind: 'editor'; id: string; connId: string; db: string; schema: string; title: string }
-export type TableTab = { kind: 'table'; id: string; connId: string; ref: TableRef; objKind: ObjectKind; sub: TableSub }
+/** manual: 수동 커밋 (없으면 접속이 운영 DB일 때 켜짐) */
+export type EditorTab = { kind: 'editor'; id: string; connId: string; db: string; schema: string; title: string; manual?: boolean }
+/** filter·filterSeq: 외래 키 따라가기로 열 때 처음 조건 (seq가 바뀌면 다시 건다) */
+export type TableTab = { kind: 'table'; id: string; connId: string; ref: TableRef; objKind: ObjectKind; sub: TableSub; filter?: string; filterSeq?: number }
 export type Tab = EditorTab | TableTab
 export type Panel = 'nav' | 'history'
 
@@ -28,7 +30,7 @@ interface Ws {
   closeTab(id: string): Promise<void>
   closeOthers(id: string): void
   openEditor(connId: string, o?: { db?: string; schema?: string; text?: string }): void
-  openTable(connId: string, ref: TableRef, kind: ObjectKind, sub?: TableSub): void
+  openTable(connId: string, ref: TableRef, kind: ObjectKind, sub?: TableSub, filter?: string): void
   updateTab(id: string, patch: Partial<EditorTab> | Partial<TableTab>): void
   /** 탭 순서 바꾸기 (끌어 놓기) */
   reorder(ids: string[]): void
@@ -239,14 +241,15 @@ export function WsProvider({ children }: { children: ReactNode }) {
     setLastConnId(connId)
   }, [connections])
 
-  const openTable = useCallback((connId: string, ref: TableRef, kind: ObjectKind, sub: TableSub = 'data') => {
+  const openTable = useCallback((connId: string, ref: TableRef, kind: ObjectKind, sub: TableSub = 'data', filter?: string) => {
     const found = tabs.find((x) => x.kind === 'table' && x.connId === connId && x.ref.db === ref.db && x.ref.schema === ref.schema && x.ref.table === ref.table)
+    const f = filter === undefined ? {} : { filter, filterSeq: Date.now() }
     if (found) {
-      setTabs((list) => list.map((x) => (x.id === found.id ? ({ ...x, sub } as Tab) : x)))
+      setTabs((list) => list.map((x) => (x.id === found.id ? ({ ...x, sub, ...f } as Tab) : x)))
       setActiveState(found.id)
     } else {
       const id = 'tb-' + randomKey()
-      setTabs((list) => [...list, { kind: 'table', id, connId, ref, objKind: kind, sub }])
+      setTabs((list) => [...list, { kind: 'table', id, connId, ref, objKind: kind, sub, ...f }])
       setActiveState(id)
     }
     setLastConnId(connId)

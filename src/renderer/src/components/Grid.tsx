@@ -1,7 +1,7 @@
 // 결과 표: 보이는 행만 그리기(수만 행도 가볍게), 칸 고르기(끌기·Shift — 가장자리 밖으로 끌면 저절로 넘어감), 가운데 단추로 끌어 옮기기,
 // 열 너비 조절, 머리글 눌러 정렬, 칸 고치기, 복사
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type Ref } from 'react'
-import { ArrowDown, ArrowUp, KeyRound } from 'lucide-react'
+import { ArrowDown, ArrowUp, KeyRound, Link2 } from 'lucide-react'
 import { isBin, type Cell, type SortKey } from '../../../shared/types'
 import { cellCopy, cellDisplay, cellText, isNumericType } from '../format'
 import { api } from '../api'
@@ -11,6 +11,8 @@ export interface GridColumn {
   name: string
   type: string
   pk?: boolean
+  /** 외래 키면 참조하는 곳 (머리글에 고리 표시) */
+  fk?: string
 }
 
 /** 고른 칸 범위 (r0 ≤ r1, c0 ≤ c1) */
@@ -44,6 +46,8 @@ export interface GridProps {
   canEdit?(r: number, c: number): boolean
   onEdit?(r: number, c: number, v: Cell): void
   onMenu?(e: MouseEvent, sel: Sel): void
+  /** 고른 범위가 바뀔 때 (고른 칸 계산·세로 보기) */
+  onSelect?(sel: Sel | null): void
   /** 표가 먼저 받는 키 (Delete, Ctrl+Z 등). 처리했으면 true */
   onKey?(e: KeyboardEvent, sel: Sel | null): boolean
   handle?: Ref<GridHandle>
@@ -124,6 +128,11 @@ export function Grid(p: GridProps) {
     ? { r0: Math.min(anchor[0], focusCell[0]), r1: Math.max(anchor[0], focusCell[0]), c0: Math.min(anchor[1], focusCell[1]), c1: Math.max(anchor[1], focusCell[1]) }
     : null
   const inSel = (r: number, c: number) => !!sel && r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1
+  const onSelect = useRef(p.onSelect)
+  onSelect.current = p.onSelect
+  useEffect(() => {
+    onSelect.current?.(anchor && focusCell ? { r0: Math.min(anchor[0], focusCell[0]), r1: Math.max(anchor[0], focusCell[0]), c0: Math.min(anchor[1], focusCell[1]), c1: Math.max(anchor[1], focusCell[1]) } : null)
+  }, [anchor, focusCell])
 
   const first = Math.max(0, Math.floor(scroll.top / ROW_H) - 6)
   const last = Math.min(rowCount, Math.ceil((scroll.top + viewH) / ROW_H) + 6)
@@ -450,10 +459,11 @@ export function Grid(p: GridProps) {
             const s = sortOf(col.name)
             return (
               <div key={c} className={`g-hcell ${p.onSort ? 'sortable' : ''} ${sel && c >= sel.c0 && c <= sel.c1 ? 'sel' : ''}`} style={{ width: widths[c] }}
-                title={`${col.name}${col.type ? ' · ' + col.type : ''}${p.onSort ? '\n' + t('눌러서 정렬 (Shift: 여러 열)') : ''}`}
+                title={`${col.name}${col.type ? ' · ' + col.type : ''}${col.fk ? '\n→ ' + col.fk : ''}${p.onSort ? '\n' + t('눌러서 정렬 (Shift: 여러 열)') : ''}`}
                 onClick={(e) => p.onSort?.(col.name, e.shiftKey)}>
                 <span className="g-hname">
                   {col.pk && <KeyRound className="pk-icon" />}
+                  {col.fk && <Link2 className="fk-icon" aria-label={col.fk} />}
                   <span className="ellipsis">{col.name}</span>
                   {s && (s.desc ? <ArrowDown className="sort-icon" /> : <ArrowUp className="sort-icon" />)}
                 </span>

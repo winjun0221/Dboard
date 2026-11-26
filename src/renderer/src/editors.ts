@@ -5,6 +5,14 @@ export interface EditorActions {
   run(mode: 'current' | 'script'): void
   cancel(): void
   running: boolean
+  format(): void
+  explain(): void
+  commit(): void
+  rollback(): void
+  toggleManual(): void
+  /** 수동 커밋인지, 커밋하지 않은 문장 수 */
+  manual: boolean
+  pending: number
 }
 
 const editors = new Map<string, SqlEditorHandle>()

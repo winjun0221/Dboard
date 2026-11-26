@@ -10,10 +10,12 @@ import { API_METHODS, dialectOf, type Api, type AppSettings, type ConnectionConf
 import { Manager, type Resolved } from './conn'
 import { setSqliteWorkerCode } from './drivers/sqlite'
 import {
-  allowFile, checkCell, checkChanges, checkConfig, checkCsvRead, checkCsvWrite, checkDataQuery, checkDumpObjects, checkDumpOptions, checkId, checkImport, checkInt,
+  allowFile, checkBool, checkCell, checkChanges, checkConfig, checkCsvRead, checkCsvWrite, checkDataQuery, checkDumpObjects, checkDumpOptions, checkId, checkImport, checkInt,
   checkName, checkOneOf, checkPickedFile, checkRef, checkSecrets, checkSort, checkSql, checkTabKey, checkText, validateForConnect,
 } from './guard'
 import * as dump from './dump'
+import { explain } from './explain'
+import { EXTENSIONS } from './export'
 import * as ops from './ops'
 import { Store } from './store'
 import { keyNeedsPassphrase } from './tunnel'
@@ -159,6 +161,23 @@ async function saveAs(title: string, defaultName: string, filters: Electron.File
 }
 
 const CSV_FILTER = [{ name: 'CSV', extensions: ['csv', 'txt', 'tsv'] }]
+const EXPORT_FILTERS: Record<string, Electron.FileFilter[]> = {
+  csv: CSV_FILTER,
+  xlsx: [{ name: 'Excel', extensions: ['xlsx'] }],
+  json: [{ name: 'JSON', extensions: ['json'] }],
+  md: [{ name: 'Markdown', extensions: ['md'] }],
+  sql: [{ name: 'SQL', extensions: ['sql'] }],
+}
+/** 내보내기 파일 고르기 (형식에 맞는 확장자) */
+const saveExport = (title: string, name: string, o: { format: keyof typeof EXTENSIONS }) => saveAs(title, `${name}.${EXTENSIONS[o.format]}`, EXPORT_FILTERS[o.format])
+
+/** 읽기 전용 접속이면 막기 */
+function checkWritable(id: string, what: string) {
+  if (manager.get(id).config.readOnly === true) throw new Error(t('읽기 전용 접속이라 {what} 수 없어요', { what }))
+}
+
+/** 값 보기로 불러올 칸 크기 (화면으로 보내므로 적당히) */
+const VALUE_LIMIT = 16 * 1024 * 1024
 const SQL_FILTER = [{ name: 'SQL', extensions: ['sql'] }]
 
 // ───────── IPC ─────────
@@ -277,16 +296,19 @@ const handlers: Handlers = {
   },
 
   // SQL 편집기
-  runSql: async (id, tabKey, db, schema, sql, maxRows) => {
+  runSql: async (id, tabKey, db, schema, sql, maxRows, manual) => {
     const cid = checkConnId(id)
     const live = manager.get(cid)
     const text = checkSql(sql)
     const d = checkName(db)
+    // 읽기 전용: 바꾸는 문장은 실행하지 않는다 (SQL Server는 서버 설정이 없어서 여기서만 막힘)
+    if (live.config.readOnly === true && !isReadOnlyQuery(text, live.mod.dialect)) throw new Error(t('읽기 전용 접속이라 데이터나 구조를 바꾸는 문장은 실행할 수 없어요'))
     const s = await manager.editorSession(cid, checkTabKey(tabKey), d, checkName(schema))
+    await s.setManualCommit(checkBool(manual ?? false))
     const t0 = performance.now()
     const base = { at: Date.now(), connId: cid, connName: live.config.name, db: d || live.defaultDb, sql: text }
     try {
-      const res = await s.run(text, checkInt(maxRows, 1, 1_000_000))
+      const res = await s.runManaged(text, checkInt(maxRows, 1, 1_000_000))
       const rows = res.reduce<number | null>((n, r) => (r.columns ? (n ?? 0) + r.rows.length : r.affected !== null ? (n ?? 0) + r.affected : n), null)
       store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows, error: null })
       return res
@@ -296,6 +318,38 @@ const handlers: Handlers = {
     }
   },
   cancelSql: async (tabKey) => manager.cancel(checkTabKey(tabKey)),
+  commitTx: async (tabKey) => {
+    await (await manager.existingEditor(checkTabKey(tabKey)))?.endTransaction(true)
+  },
+  rollbackTx: async (tabKey) => {
+    await (await manager.existingEditor(checkTabKey(tabKey)))?.endTransaction(false)
+  },
+  explain: async (id, tabKey, db, schema, sql, manual) => {
+    const cid = checkConnId(id)
+    const s = await manager.editorSession(cid, checkTabKey(tabKey), checkName(db), checkName(schema))
+    await s.setManualCommit(checkBool(manual ?? false))
+    return explain(s, checkSql(sql))
+  },
+  foreignKeys: async (id, ref) => {
+    const live = manager.get(checkConnId(id))
+    const r = checkRef(ref)
+    return live.mod.foreignKeys(await live.metaSession(r.db), r)
+  },
+  cellValue: async (id, ref, keyValues, column) => {
+    const live = manager.get(checkConnId(id))
+    if (!Array.isArray(keyValues) || keyValues.length > 1000) throw new Error(t('잘못된 요청'))
+    return ops.cellValue(live, checkRef(ref), keyValues.map(checkCell), checkName(column), VALUE_LIMIT)
+  },
+  saveCellValue: async (id, ref, keyValues, column, name) => {
+    const live = manager.get(checkConnId(id))
+    if (!Array.isArray(keyValues) || keyValues.length > 1000) throw new Error(t('잘못된 요청'))
+    const v = await ops.cellValue(live, checkRef(ref), keyValues.map(checkCell), checkName(column), 1024 * 1024 * 1024)
+    const bin = v !== null && typeof v === 'object'
+    const file = await saveAs(t('값을 파일로 저장'), checkText(name, 200) + (bin ? '.bin' : '.txt'), [{ name: t('모든 파일'), extensions: ['*'] }])
+    if (!file) return null
+    fs.writeFileSync(file, bin ? Buffer.from(v.bin, 'hex') : v === null ? '' : String(v))
+    return file
+  },
   closeSession: async (tabKey) => manager.closeEditor(checkTabKey(tabKey)),
   history: async (search, limit) => store.history(checkText(search ?? '', 1000), checkInt(limit, 1, 1000)),
   clearHistory: async () => store.clearHistory(),
@@ -303,7 +357,11 @@ const handlers: Handlers = {
   // 표 데이터
   tableData: async (id, ref, q) => ops.tableData(manager.get(checkConnId(id)), checkRef(ref), checkDataQuery(q)),
   countRows: async (id, ref, filter) => ops.countRows(manager.get(checkConnId(id)), checkRef(ref), checkText(filter ?? '', 100_000)),
-  applyChanges: async (id, ref, changes) => ops.applyChanges(manager.get(checkConnId(id)), checkRef(ref), checkChanges(changes)),
+  applyChanges: async (id, ref, changes) => {
+    const cid = checkConnId(id)
+    checkWritable(cid, t('데이터를 고칠'))
+    return ops.applyChanges(manager.get(cid), checkRef(ref), checkChanges(changes))
+  },
 
   // CSV
   saveCsv: async (name, columns, rows, o) => {
@@ -314,7 +372,7 @@ const handlers: Handlers = {
       if (!Array.isArray(r)) throw new Error(t('잘못된 요청'))
       return r.map(checkCell)
     })
-    const file = await saveAs(t('CSV로 저장'), checkText(name, 200) + '.csv', CSV_FILTER)
+    const file = await saveExport(t('내보내기'), checkText(name, 200), opts)
     if (!file) return null
     return { path: file, rows: await ops.saveRowsCsv(file, cols, data, opts) }
   },
@@ -325,7 +383,7 @@ const handlers: Handlers = {
     // 다시 실행해서 전부 받으므로 읽기만 하는 문장만
     if (!isReadOnlyQuery(text, dialectOf(live.config.driver))) throw new Error(t('SELECT처럼 읽기만 하는 문장만 다시 실행해서 내보낼 수 있어요'))
     const opts = checkCsvWrite(o)
-    const file = await saveAs(t('CSV로 내보내기'), checkText(name, 200) + '.csv', CSV_FILTER)
+    const file = await saveExport(t('내보내기'), checkText(name, 200), opts)
     if (!file) return null
     const s = await manager.editorSession(cid, checkTabKey(tabKey), checkName(db), checkName(schema))
     return { path: file, rows: await ops.exportSql(s, text, file, opts) }
@@ -334,9 +392,9 @@ const handlers: Handlers = {
     const live = manager.get(checkConnId(id))
     const r = checkRef(ref)
     const opts = checkCsvWrite(o)
-    const file = await saveAs(t('CSV로 내보내기'), r.table + '.csv', CSV_FILTER)
+    const file = await saveExport(t('내보내기'), r.table, opts)
     if (!file) return null
-    return { path: file, rows: await ops.exportTable(live, r, checkText(filter ?? '', 100_000), checkSort(order ?? []), file, opts) }
+    return { path: file, rows: await ops.exportTable(live, r, checkText(filter ?? '', 100_000), checkSort(order ?? []), file, { ...opts, table: opts.table || r.table }) }
   },
   // SQL 덤프·SQL 파일 실행 (따로 연결을 열어 탐색기·편집기를 막지 않고, tabKey로 취소)
   exportDump: async (id, tabKey, db, schema, objects, o, name) => {
@@ -366,6 +424,7 @@ const handlers: Handlers = {
   },
   runSqlFile: async (id, tabKey, db, schema, file) => {
     const cid = checkConnId(id)
+    checkWritable(cid, t('SQL 파일을 실행할'))
     const live = manager.get(cid)
     const key = checkTabKey(tabKey)
     const f = checkPickedFile(file)
@@ -394,7 +453,11 @@ const handlers: Handlers = {
     const f = checkPickedFile(file)
     return ops.previewCsv(f, checkCsvRead(o), path.basename(f))
   },
-  importCsv: async (id, ref, file, o) => ops.importCsv(manager.get(checkConnId(id)), checkRef(ref), checkPickedFile(file), checkImport(o)),
+  importCsv: async (id, ref, file, o) => {
+    const cid = checkConnId(id)
+    checkWritable(cid, t('가져올'))
+    return ops.importCsv(manager.get(cid), checkRef(ref), checkPickedFile(file), checkImport(o))
+  },
 
   // 앱
   settings: async () => readSettings(),

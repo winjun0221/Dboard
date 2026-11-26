@@ -2,7 +2,7 @@
 import { useRef, useState, type MouseEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  CircleHelp, DatabaseBackup, ExternalLink, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database,
+  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database,
 } from 'lucide-react'
 import type { AppSettings } from '../../../shared/types'
 import { api, errorText } from '../api'
@@ -94,6 +94,12 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
           { label: t('실행'), icon: Play, hint: 'Ctrl+Enter', disabled: !ed || ed.running, onClick: () => ed?.run('current') },
           { label: t('스크립트 실행'), icon: PlaySquare, hint: 'Alt+X', disabled: !ed || ed.running, onClick: () => ed?.run('script') },
           { label: t('실행 취소'), icon: Square, disabled: !ed?.running, onClick: () => ed?.cancel() },
+          { label: t('실행 계획'), icon: ListTree, hint: 'Ctrl+Shift+E', disabled: !ed || ed.running, onClick: () => ed?.explain() },
+          { label: t('SQL 정렬'), icon: AlignLeft, hint: 'Ctrl+Shift+F', disabled: !ed, onClick: () => ed?.format() },
+          'sep',
+          { label: t('수동 커밋'), checked: !!ed?.manual, disabled: !ed, onClick: () => ed?.toggleManual() },
+          { label: ed?.pending ? t('커밋 ({n})', { n: ed.pending }) : t('커밋'), icon: CircleCheckBig, disabled: !ed?.manual, onClick: () => ed?.commit() },
+          { label: t('롤백'), icon: Undo2, disabled: !ed?.manual, onClick: () => ed?.rollback() },
           'sep',
           { label: t('새 SQL 편집기'), icon: SquareTerminal, hint: 'Ctrl+]', onClick: actions.newEditor },
           { label: t('실행 기록'), icon: History, onClick: () => { ws.setPanel('history'); if (actions.sideHidden) actions.toggleSide() } },

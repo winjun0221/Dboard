@@ -1,17 +1,23 @@
-// SQL 편집기 결과 표 하나: 정렬(가져온 행 안에서), 복사, CSV 내보내기, 잘렸으면 모두 가져오기
+// SQL 편집기 결과 표 하나: 정렬(가져온 행 안에서), 복사, 내보내기(CSV·엑셀·JSON·Markdown·INSERT), 잘렸으면 모두 가져오기,
+// 행 세로 보기, 고른 칸 계산, 값 보기
 import { useMemo, useRef, useState } from 'react'
-import { ClipboardCopy, Download, ListPlus, TriangleAlert } from 'lucide-react'
-import type { SortKey, StatementResult } from '../../../shared/types'
-import { Grid, type GridHandle } from './Grid'
+import { ClipboardCopy, Download, ListPlus, Pencil, TableProperties, TriangleAlert } from 'lucide-react'
+import type { Dialect, SortKey, StatementResult } from '../../../shared/types'
+import { referencedTables } from '../../../shared/sql'
+import { Grid, type GridHandle, type Sel } from './Grid'
+import { RecordView, StatsText, selectionStats } from './GridExtras'
+import { ValueDialog } from '../dialogs/ValueDialog'
 import { ExportDialog } from '../dialogs/ExportDialog'
 import { api, errorText } from '../api'
 import { useUi } from '../ui'
 import { t } from '../i18n'
 import { cellCopy, compareCells, fmtNum, formatMs, isNumericType } from '../format'
 
-export function ResultView({ result, name, fetchAll, exportAll }: {
+export function ResultView({ result, name, fetchAll, exportAll, dialect = 'sqlite' }: {
   result: StatementResult
   name: string
+  /** 내보내기 SQL(INSERT) 형식의 따옴표 */
+  dialect?: Dialect
   /** 최대 행 수 없이 다시 가져오기 (읽기만 하는 문장일 때) */
   fetchAll: (() => void) | null
   /** 다시 실행해서 파일로 전부 (읽기만 하는 문장일 때) */
@@ -20,6 +26,9 @@ export function ResultView({ result, name, fetchAll, exportAll }: {
   const ui = useUi()
   const grid = useRef<GridHandle>(null)
   const [sort, setSort] = useState<SortKey[]>([])
+  const [sel, setSel] = useState<Sel | null>(null)
+  const [record, setRecord] = useState(false)
+  const [recRow, setRecRow] = useState(0)
   const columns = useMemo(() => result.columns ?? [], [result])
   const order = useMemo(() => {
     const idx = result.rows.map((_, i) => i)
@@ -51,10 +60,16 @@ export function ResultView({ result, name, fetchAll, exportAll }: {
     ui.notify(t('{n}행을 복사했어요', { n: fmtNum(result.rows.length) }), 'success')
   }
 
+  const cell = (r: number, c: number) => result.rows[order[r]][c]
+  const stats = useMemo(() => selectionStats(sel, cell), [sel, order])
+  const openValue = (r: number, c: number) => ui.open((close) => <ValueDialog column={columns[c].name} type={columns[c].type} value={cell(r, c)} readOnly onClose={close} />)
+
   const doExport = () => ui.open((close) => (
     <ExportDialog
-      title={t('CSV로 내보내기')}
+      title={t('내보내기')}
       rows={result.rows.length}
+      dialect={dialect}
+      table={referencedTables(result.sql, dialect)[0] ?? ''}
       rerun={result.truncated ? { allowed: !!exportAll } : undefined}
       onClose={close}
       onSubmit={async (o, all) => {
@@ -84,10 +99,20 @@ export function ResultView({ result, name, fetchAll, exportAll }: {
           </span>
         )}
         <span className="spacer" />
+        {!record && <StatsText stats={stats} />}
+        <button className={`tbtn ${record ? 'on' : ''}`} title={t('고른 행을 세로로 보기 (열 이름 · 값)')} onClick={() => {
+          if (!record) setRecRow(sel?.r0 ?? 0)
+          else window.setTimeout(() => grid.current?.select(recRow, sel?.c0 ?? 0), 30)
+          setRecord(!record)
+        }}><TableProperties />{t('세로 보기')}</button>
         <button className="tbtn" onClick={copyAll} title={t('열 이름과 함께 전부 복사 (엑셀에 붙여 넣기 좋게 탭으로 구분)')}><ClipboardCopy />{t('복사')}</button>
-        <button className="tbtn" onClick={doExport}><Download />{t('CSV')}</button>
+        <button className="tbtn" onClick={doExport} title={t('CSV·엑셀·JSON 등으로 내보내기')}><Download />{t('내보내기')}</button>
       </div>
+      {record ? (
+        <RecordView columns={columns} row={recRow} rowCount={result.rows.length} cell={cell} onRow={(r) => setRecRow(Math.max(0, Math.min(result.rows.length - 1, r)))} onOpen={openValue} />
+      ) : (
       <Grid
+        onSelect={setSel}
         handle={grid}
         columns={columns}
         rowCount={result.rows.length}
@@ -95,13 +120,15 @@ export function ResultView({ result, name, fetchAll, exportAll }: {
         sort={sort}
         onSort={onSort}
         widthKey={result.sql + '\u0000' + columns.map((c) => c.name).join('\u0000')}
-        onMenu={(e) => ui.menu(e, [
+        onMenu={(e, s) => ui.menu(e, [
           { label: t('복사'), icon: ClipboardCopy, hint: 'Ctrl+C', onClick: () => grid.current?.copy(false) },
           { label: t('열 이름과 함께 복사'), hint: 'Ctrl+Shift+C', onClick: () => grid.current?.copy(true) },
+          s.r0 === s.r1 && s.c0 === s.c1 && { label: t('값 보기…'), icon: Pencil, onClick: () => openValue(s.r0, s.c0) },
           'sep',
-          { label: t('CSV로 내보내기…'), icon: Download, onClick: doExport },
+          { label: t('내보내기…'), icon: Download, onClick: doExport },
         ])}
       />
+      )}
     </div>
   )
 }

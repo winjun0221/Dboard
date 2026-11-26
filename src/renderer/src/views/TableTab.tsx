@@ -49,7 +49,7 @@ export function TableTabView({ tab, active }: { tab: TableTab; active: boolean }
       </div>
       {needConnect && <div className="center-fill"><button className="btn" onClick={() => void ws.ensureConnected(tab.connId)}>{t('연결해서 보기')}</button></div>}
       <div className="table-body" style={{ display: tab.sub === 'data' ? 'flex' : 'none' }}>
-        <DataView tabId={tab.id} connId={tab.connId} target={tab.ref} objKind={tab.objKind} active={active && tab.sub === 'data'} />
+        <DataView tabId={tab.id} connId={tab.connId} target={tab.ref} objKind={tab.objKind} active={active && tab.sub === 'data'} initialFilter={tab.filter} filterSeq={tab.filterSeq} />
       </div>
       {!needConnect && tab.sub === 'columns' && (
         <div className="table-body scroll">

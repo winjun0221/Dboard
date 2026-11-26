@@ -3,7 +3,7 @@
 import path from 'node:path'
 import { t } from '../shared/i18n'
 import {
-  CSV_DELIMITERS, DRIVER_KINDS, type Cell, type ConnectionConfig, type CsvReadOptions, type CsvWriteOptions, type DataQuery, type ImportOptions,
+  CSV_DELIMITERS, DRIVER_KINDS, EXPORT_FORMATS, type Cell, type ConnectionConfig, type CsvReadOptions, type CsvWriteOptions, type DataQuery, type ImportOptions,
   type DumpObject, type DumpOptions, type RowChange, type SecretsInput, type SortKey, type TableRef,
 } from '../shared/types'
 
@@ -139,7 +139,15 @@ export function checkDataQuery(v: unknown): DataQuery {
 
 export function checkCsvWrite(v: unknown): CsvWriteOptions {
   const o = checkObject(v)
-  return { delimiter: checkOneOf(o.delimiter, CSV_DELIMITERS), header: o.header !== false, bom: o.bom !== false, nullText: checkText(o.nullText ?? '', 20) }
+  return {
+    format: checkOneOf(o.format ?? 'csv', EXPORT_FORMATS),
+    table: checkText(o.table ?? '', 512),
+    dialect: checkOneOf(o.dialect ?? 'sqlite', ['sqlite', 'mysql', 'postgres', 'mssql'] as const),
+    delimiter: checkOneOf(o.delimiter ?? ',', CSV_DELIMITERS),
+    header: o.header !== false,
+    bom: o.bom !== false,
+    nullText: checkText(o.nullText ?? '', 20),
+  }
 }
 
 export function checkCsvRead(v: unknown): CsvReadOptions {
@@ -190,6 +198,8 @@ export function checkConfig(v: unknown): ConnectionConfig {
     savePassword: o.savePassword !== false,
     ssl: checkOneOf(o.ssl ?? 'off', ['off', 'require', 'verify'] as const),
     showSystem: o.showSystem === true,
+    production: o.production === true,
+    readOnly: o.readOnly === true,
     ssh: {
       enabled: ssh.enabled === true,
       host: checkText(ssh.host ?? '', 255).trim(),

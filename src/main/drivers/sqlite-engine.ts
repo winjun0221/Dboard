@@ -65,14 +65,14 @@ export class SqliteEngine {
     return { sql, columns, rows, truncated, affected, ms: performance.now() - t0 }
   }
 
-  query(sql: string, params: Cell[]): Rows {
+  query(sql: string, params: Cell[], binLimit = 64): Rows {
     const st = this.prepare(sql)
     const columns = columnsOf(st)
     if (columns.length === 0) {
       st.run(...bind(params))
       return { columns, rows: [] }
     }
-    const rows = (st.all(...bind(params)) as unknown as unknown[][]).map((r) => r.map((v) => toCell(v)))
+    const rows = (st.all(...bind(params)) as unknown as unknown[][]).map((r) => r.map((v) => toCell(v, binLimit)))
     return { columns, rows }
   }
 
@@ -122,7 +122,7 @@ export function dispatch(engine: SqliteEngine, op: string, args: unknown[]): unk
     case 'run':
       return engine.run(args[0] as string, args[1] as number)
     case 'query':
-      return engine.query(args[0] as string, args[1] as Cell[])
+      return engine.query(args[0] as string, args[1] as Cell[], (args[2] as number | undefined) ?? 64)
     case 'exec':
       return engine.exec(args[0] as string, args[1] as Cell[])
     case 'openCursor':

@@ -5,7 +5,7 @@ import { quoteIdent } from '../../shared/dialect'
 import { t } from '../../shared/i18n'
 import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult } from '../../shared/types'
 import { toCell, toParam } from '../values'
-import { bool, elapsed, groupColumns, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
+import { bool, elapsed, groupColumns, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
 const TYPE_NAMES: Record<number, string> = {
   0: 'decimal', 1: 'tinyint', 2: 'smallint', 3: 'int', 4: 'float', 5: 'double', 6: 'null', 7: 'timestamp', 8: 'bigint', 9: 'mediumint',
@@ -110,10 +110,10 @@ export class MysqlSession extends Session {
     return [one(res, fields as FieldPacket[] | undefined)]
   }
 
-  protected async queryRaw(sql: string, params: Cell[]): Promise<Rows> {
+  protected async queryRaw(sql: string, params: Cell[], binLimit: number): Promise<Rows> {
     const { res, fields } = await this.q(sql, params)
     if (!Array.isArray(res) || !fields) return { columns: [], rows: [] }
-    return { columns: columnsOf(fields as FieldPacket[]), rows: (res as unknown[][]).map((r) => r.map((v) => toCell(v))) }
+    return { columns: columnsOf(fields as FieldPacket[]), rows: (res as unknown[][]).map((r) => r.map((v) => toCell(v, binLimit))) }
   }
 
   protected async execRaw(sql: string, params: Cell[]): Promise<number | null> {
@@ -242,6 +242,15 @@ export const mysqlDriver: DriverModule = {
     const name = `${quoteIdent('mysql', ref.db)}.${quoteIdent('mysql', ref.table)}`
     const r = await s.query(kind === 'view' ? `SHOW CREATE VIEW ${name}` : `SHOW CREATE TABLE ${name}`)
     return str(r.rows[0]?.[1]) + ';'
+  },
+
+  async foreignKeys(s, ref) {
+    const r = await s.query(
+      `SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`,
+      [ref.db, ref.table],
+    )
+    return groupForeignKeys(r.rows, (db, table) => ({ db, schema: '', table }))
   },
 
   async completion(s, db) {

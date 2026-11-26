@@ -72,7 +72,7 @@ export interface SqlEditorHandle {
   closePopups(): void
 }
 
-export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeholder, onChange, onRun, onRunScript, handle }: {
+export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeholder, onChange, onRun, onRunScript, onFormat, onExplain, handle }: {
   initial: string
   driver: DriverKind
   /** 자동 완성용 표 → 열 */
@@ -83,6 +83,9 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
   onChange?: (text: string) => void
   onRun?: () => void
   onRunScript?: () => void
+  /** Ctrl+Shift+F 정렬, Ctrl+Shift+E 실행 계획 */
+  onFormat?: () => void
+  onExplain?: () => void
   handle?: Ref<SqlEditorHandle>
 }) {
   const host = useRef<HTMLDivElement>(null)
@@ -90,8 +93,8 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
   const lang = useRef(new Compartment())
   const size = useRef(new Compartment())
   const ro = useRef(new Compartment())
-  const cb = useRef({ onChange, onRun, onRunScript })
-  cb.current = { onChange, onRun, onRunScript }
+  const cb = useRef({ onChange, onRun, onRunScript, onFormat, onExplain })
+  cb.current = { onChange, onRun, onRunScript, onFormat, onExplain }
 
   useEffect(() => {
     const v = new EditorView({
@@ -122,6 +125,8 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
             { key: 'Mod-Enter', run: (v) => { closeCompletion(v); cb.current.onRun?.(); return true } },
             { key: 'Alt-x', run: (v) => { closeCompletion(v); cb.current.onRunScript?.(); return true } },
             { key: 'Alt-X', run: (v) => { closeCompletion(v); cb.current.onRunScript?.(); return true } },
+            { key: 'Mod-Shift-f', run: (v) => { closeCompletion(v); cb.current.onFormat?.(); return !!cb.current.onFormat } },
+            { key: 'Mod-Shift-e', run: (v) => { closeCompletion(v); cb.current.onExplain?.(); return !!cb.current.onExplain } },
           ])),
           // 자동 완성 목록이 떠 있으면 Tab으로 넣기, 아니면 들여쓰기
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, { key: 'Tab', run: acceptCompletion }, indentWithTab]),

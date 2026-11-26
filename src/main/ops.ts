@@ -1,8 +1,9 @@
 // 표 데이터 보기·고치기, CSV 내보내기·가져오기 (Electron 없이 — 테스트에서 그대로 쓴다)
 import fs from 'node:fs'
 import { countSql, selectAll, selectPage } from '../shared/dialect'
-import { buildChange, buildInsertMany } from '../shared/edit'
-import { csvLine, decodeText, detectDelimiter, detectEncoding, parseCsv } from '../shared/csv'
+import { buildChange, buildInsertMany, selectCell } from '../shared/edit'
+import { decodeText, detectDelimiter, detectEncoding, parseCsv } from '../shared/csv'
+import { writeExport } from './export'
 import { t } from '../shared/i18n'
 import type { Cell, CsvPreview, CsvReadOptions, CsvWriteOptions, DataQuery, ImportOptions, RowChange, SortKey, TableData, TableKey, TableRef } from '../shared/types'
 import { elapsed, type Session } from './drivers/base'
@@ -82,50 +83,20 @@ export async function applyChanges(live: Live, ref: TableRef, changes: RowChange
   })
 }
 
-// ───────── CSV 내보내기 ─────────
-
-/** 파일에 조금씩 쓰기 (큰 결과도 메모리에 다 올리지 않음) */
-async function writeCsv(file: string, o: CsvWriteOptions, run: (onColumns: (names: string[]) => void, onRows: (rows: Cell[][]) => Promise<void>) => Promise<number>): Promise<number> {
-  const out = fs.createWriteStream(file, { encoding: 'utf8' })
-  let failed: Error | null = null
-  out.on('error', (e) => {
-    failed = e
-  })
-  const write = (s: string) => new Promise<void>((resolve, reject) => {
-    if (failed) return reject(failed)
-    if (out.write(s)) return resolve()
-    const done = (e?: Error) => {
-      out.off('drain', done)
-      out.off('error', done)
-      if (e) reject(e)
-      else resolve()
-    }
-    out.on('drain', done)
-    out.on('error', done)
-  })
-  try {
-    if (o.bom) await write('﻿')
-    let header: Promise<void> = Promise.resolve()
-    const n = await run(
-      (names) => {
-        if (o.header) header = write(csvLine(names, o.delimiter) + '\r\n')
-      },
-      async (rows) => {
-        await header
-        await write(rows.map((r) => csvLine(r, o.delimiter, o.nullText)).join('\r\n') + '\r\n')
-      },
-    )
-    await header
-    await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())))
-    return n
-  } catch (e) {
-    out.destroy()
-    throw e
-  }
+/** 칸 값 전체 (바이너리도 limit 바이트까지) */
+export async function cellValue(live: Live, ref: TableRef, keyValues: Cell[], column: string, limit: number): Promise<Cell> {
+  const key = await tableKey(live, ref)
+  const s = await live.metaSession(ref.db)
+  const b = selectCell(live.mod.dialect, ref, key, keyValues, column)
+  const r = await s.query(b.sql, b.params, limit)
+  if (r.rows.length === 0) throw new Error(t('행을 찾지 못했어요. 새로고침한 뒤 다시 해 주세요.'))
+  return r.rows[0][0]
 }
 
+// ───────── 내보내기 (형식은 export.ts) ─────────
+
 export function saveRowsCsv(file: string, columns: string[], rows: Cell[][], o: CsvWriteOptions): Promise<number> {
-  return writeCsv(file, o, async (onColumns, onRows) => {
+  return writeExport(file, o, async (onColumns, onRows) => {
     onColumns(columns)
     for (let i = 0; i < rows.length; i += 2000) await onRows(rows.slice(i, i + 2000))
     return rows.length
@@ -133,7 +104,7 @@ export function saveRowsCsv(file: string, columns: string[], rows: Cell[][], o: 
 }
 
 export function exportSql(s: Session, sql: string, file: string, o: CsvWriteOptions): Promise<number> {
-  return writeCsv(file, o, (onColumns, onRows) => s.stream(sql, (cols) => onColumns(cols.map((c) => c.name)), onRows))
+  return writeExport(file, { ...o, dialect: s.dialect }, (onColumns, onRows) => s.stream(sql, (cols) => onColumns(cols.map((c) => c.name)), onRows))
 }
 
 export async function exportTable(live: Live, ref: TableRef, filter: string, order: SortKey[], file: string, o: CsvWriteOptions): Promise<number> {

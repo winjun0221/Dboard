@@ -173,7 +173,7 @@ export async function exercise(m: Manager, id: string, r: Resolved, prepare: (m:
     // ── CSV ──
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dboard-csv-'))
     const out = path.join(dir, 'items.csv')
-    const exported = await ops.exportTable(live, ref, '', [{ column: 'id', desc: false }], out, { delimiter: ',', header: true, bom: true, nullText: '' })
+    const exported = await ops.exportTable(live, ref, '', [{ column: 'id', desc: false }], out, { format: 'csv', table: '', dialect: 'sqlite', delimiter: ',', header: true, bom: true, nullText: '' })
     expect(exported).toBe(3)
     const text = fs.readFileSync(out, 'utf8')
     expect(text.startsWith('﻿id,name,price,created,data,big\r\n')).toBe(true)

@@ -64,6 +64,15 @@ export function buildChange(d: Dialect, ref: TableRef, key: TableKey, c: RowChan
 }
 
 /** 자리 표시를 값 글자로 바꾼 SQL (미리 보기). 문자열 안의 ?는 건드리지 않게 자리 표시 순서대로만 바꾼다 */
+/** 키로 행 하나의 칸 하나 읽기 (값 보기: 화면 표에는 바이너리 앞부분만 있다) */
+export function selectCell(d: Dialect, ref: TableRef, key: TableKey, keyValues: Cell[], column: string): Built {
+  const p = new Params(d)
+  const cond = where(d, key, keyValues, p)
+  const col = quoteIdent(d, column)
+  const sql = d === 'mssql' ? `SELECT TOP (1) ${col} FROM ${qualify(d, ref)} WHERE ${cond}` : `SELECT ${col} FROM ${qualify(d, ref)} WHERE ${cond} LIMIT 1`
+  return { sql, params: p.list, expectOne: false }
+}
+
 export function inlineParams(d: Dialect, b: Built): string {
   if (d === 'postgres') return b.sql.replace(/\$(\d+)/g, (_, n: string) => literal(d, b.params[Number(n) - 1] ?? null))
   if (d === 'mssql') return b.sql.replace(/@p(\d+)/g, (_, n: string) => literal(d, b.params[Number(n) - 1] ?? null))
@@ -73,7 +82,12 @@ export function inlineParams(d: Dialect, b: Built): string {
 }
 
 export function previewChanges(d: Dialect, ref: TableRef, key: TableKey, changes: RowChange[]): string[] {
-  return [beginSql(d), ...changes.map((c) => inlineParams(d, buildChange(d, ref, key, c))), 'COMMIT']
+  return [beginSql(d), ...changesAsSql(d, ref, key, changes), 'COMMIT']
+}
+
+/** 바뀜 → 값을 글자로 넣은 SQL 문장들 (트랜잭션 없이 — 고른 행을 SQL로 복사할 때) */
+export function changesAsSql(d: Dialect, ref: TableRef, key: TableKey, changes: RowChange[]): string[] {
+  return changes.map((c) => inlineParams(d, buildChange(d, ref, key, c)))
 }
 
 /** CSV 가져오기: 여러 행 INSERT를 자리 표시 한도에 맞춰 나눈다 */

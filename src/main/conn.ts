@@ -31,8 +31,17 @@ export class Live {
     return this.mod.defaultDatabase(this.r.config)
   }
 
-  open(db: string): Promise<Session> {
-    return this.mod.open({ config: this.r.config, endpoint: this.endpoint, password: this.r.password, database: db })
+  async open(db: string): Promise<Session> {
+    const s = await this.mod.open({ config: this.r.config, endpoint: this.endpoint, password: this.r.password, database: db })
+    if (this.r.config.readOnly === true) {
+      try {
+        await s.applyReadOnly()
+      } catch (e) {
+        await s.close().catch(() => undefined)
+        throw e
+      }
+    }
+    return s
   }
 
   /** 시스템 표 읽기·표 데이터용 연결. PostgreSQL만 DB마다 따로 */
@@ -177,6 +186,14 @@ export class Manager {
       if (this.editors.get(tabKey)?.session === p) this.editors.delete(tabKey)
     })
     return p
+  }
+
+  /** 이미 열린 편집기 연결 (없으면 null — 커밋·롤백할 것도 없다) */
+  async existingEditor(tabKey: string): Promise<Session | null> {
+    const e = this.editors.get(tabKey)
+    if (!e) return null
+    const s = await e.session.catch(() => null)
+    return s && !s.dead ? s : null
   }
 
   async cancel(tabKey: string) {

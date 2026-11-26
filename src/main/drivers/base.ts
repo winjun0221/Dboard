@@ -1,9 +1,13 @@
 // 드라이버 공통 틀: DB 연결 하나(Session)와 DB 종류별 모듈(DriverModule — 연결 열기 + 시스템 표 읽기)
 // 새 DB 종류를 붙이려면 이 두 가지를 구현하고 drivers/index.ts에 등록한다.
 import { beginSql } from '../../shared/dialect'
+import { firstKeyword, mask } from '../../shared/sql'
 import type {
-  Cell, ColumnInfo, ConnectionConfig, DatabaseList, DbObject, Dialect, IndexInfo, ObjectKind, ResultColumn, StatementResult, TableRef,
+  Cell, ColumnInfo, ConnectionConfig, DatabaseList, DbObject, Dialect, ForeignKeyInfo, IndexInfo, ObjectKind, ResultColumn, StatementResult, TableRef,
 } from '../../shared/types'
+
+/** 사용자가 직접 쓴 트랜잭션 문장 (수동 커밋에서 감싸지 않고 그대로) */
+const TX_WORDS = new Set(['BEGIN', 'START', 'COMMIT', 'ROLLBACK', 'END', 'ABORT', 'SAVEPOINT', 'RELEASE'])
 
 export interface Endpoint {
   host: string
@@ -39,6 +43,10 @@ export abstract class Session {
   /** 연결이 끊겼으면 true (다음에 새로 연다) */
   dead = false
   private chain: Promise<unknown> = Promise.resolve()
+  /** 수동 커밋 (편집기 연결만). MySQL autocommit=0, SQL Server IMPLICIT_TRANSACTIONS, PostgreSQL·SQLite는 우리가 BEGIN */
+  private manual = false
+  /** PostgreSQL·SQLite: 우리가 연 트랜잭션이 열려 있는지 */
+  private txOpen = false
 
   protected lock<T>(fn: () => Promise<T>): Promise<T> {
     const r = this.chain.then(fn, fn)
@@ -48,7 +56,8 @@ export abstract class Session {
 
   /** 문장 하나(SQL Server는 배치 하나) 실행. 결과 표는 maxRows까지 */
   protected abstract runRaw(sql: string, maxRows: number): Promise<StatementResult[]>
-  protected abstract queryRaw(sql: string, params: Cell[]): Promise<Rows>
+  /** binLimit: 바이너리를 앞 몇 바이트까지 (화면 표는 64, 값 보기는 전부) */
+  protected abstract queryRaw(sql: string, params: Cell[], binLimit: number): Promise<Rows>
   /** 바뀐 행 수 */
   protected abstract execRaw(sql: string, params: Cell[]): Promise<number | null>
   protected abstract streamRaw(sql: string, onColumns: OnColumns, onRows: OnRows): Promise<number>
@@ -64,8 +73,79 @@ export abstract class Session {
     return this.lock(() => this.runRaw(sql, maxRows))
   }
 
-  query(sql: string, params: Cell[] = []) {
-    return this.lock(() => this.queryRaw(sql, params))
+  get manualCommit() {
+    return this.manual
+  }
+
+  /** 수동 커밋 켜고 끄기. 끌 때 남은 트랜잭션은 되돌린다 (화면이 먼저 커밋·롤백을 묻는다) */
+  async setManualCommit(on: boolean) {
+    if (on === this.manual) return
+    await this.lock(async () => {
+      if (this.dialect === 'mysql') {
+        if (!on) await this.execRaw('ROLLBACK', [])
+        await this.execRaw(`SET autocommit = ${on ? 0 : 1}`, [])
+      } else if (this.dialect === 'mssql') {
+        if (!on) await this.execRaw('IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION', [])
+        await this.execRaw(`SET IMPLICIT_TRANSACTIONS ${on ? 'ON' : 'OFF'}`, [])
+      } else if (!on && this.txOpen) {
+        await this.execRaw('ROLLBACK', [])
+        this.txOpen = false
+      }
+      this.manual = on
+    })
+  }
+
+  /** 편집기 실행. 수동 커밋이면 PostgreSQL·SQLite는 트랜잭션을 열고,
+   *  PostgreSQL은 문장마다 SAVEPOINT로 감싸 오류가 나도 앞의 작업이 살아 있게 한다 (오류 = 트랜잭션 전체 중단을 막음) */
+  runManaged(sql: string, maxRows: number) {
+    if (!this.manual || (this.dialect !== 'postgres' && this.dialect !== 'sqlite')) return this.run(sql, maxRows)
+    return this.lock(async () => {
+      const kw = firstKeyword(sql, this.dialect)
+      if (TX_WORDS.has(kw)) {
+        const r = await this.runRaw(sql, maxRows)
+        if (kw === 'BEGIN' || kw === 'START') this.txOpen = true
+        else if ((kw === 'COMMIT' || kw === 'END' || kw === 'ABORT' || kw === 'ROLLBACK') && !/\bTO\b/i.test(mask(sql, this.dialect))) this.txOpen = false
+        return r
+      }
+      if (!this.txOpen) {
+        await this.execRaw('BEGIN', [])
+        this.txOpen = true
+      }
+      if (this.dialect === 'sqlite') return this.runRaw(sql, maxRows)
+      await this.execRaw('SAVEPOINT dboard_sp', [])
+      try {
+        const r = await this.runRaw(sql, maxRows)
+        await this.execRaw('RELEASE SAVEPOINT dboard_sp', [])
+        return r
+      } catch (e) {
+        await this.execRaw('ROLLBACK TO SAVEPOINT dboard_sp', []).catch(() => undefined)
+        await this.execRaw('RELEASE SAVEPOINT dboard_sp', []).catch(() => undefined)
+        throw e
+      }
+    })
+  }
+
+  /** 수동 커밋의 트랜잭션 확정(commit) 또는 되돌리기 */
+  endTransaction(commit: boolean) {
+    return this.lock(async () => {
+      const word = commit ? 'COMMIT' : 'ROLLBACK'
+      if (this.dialect === 'mssql') await this.execRaw(`IF @@TRANCOUNT > 0 ${word} TRANSACTION`, [])
+      else if (this.dialect === 'mysql') await this.execRaw(word, [])
+      else if (this.txOpen) {
+        await this.execRaw(word, [])
+        this.txOpen = false
+      }
+    })
+  }
+
+  /** 읽기 전용 접속: 서버 쪽에서도 막는다 (SQL Server는 세션 설정이 없어 메인의 문장 검사만) */
+  async applyReadOnly() {
+    const sql = { mysql: 'SET SESSION TRANSACTION READ ONLY', postgres: 'SET default_transaction_read_only = on', sqlite: 'PRAGMA query_only = ON', mssql: '' }[this.dialect]
+    if (sql) await this.exec(sql)
+  }
+
+  query(sql: string, params: Cell[] = [], binLimit = 64) {
+    return this.lock(() => this.queryRaw(sql, params, binLimit))
   }
 
   exec(sql: string, params: Cell[] = []) {
@@ -81,7 +161,7 @@ export abstract class Session {
     return this.lock(async () => {
       await this.execRaw(beginSql(this.dialect), [])
       try {
-        const r = await fn({ exec: (s, p) => this.execRaw(s, p ?? []), query: (s, p) => this.queryRaw(s, p ?? []) })
+        const r = await fn({ exec: (s, p) => this.execRaw(s, p ?? []), query: (s, p) => this.queryRaw(s, p ?? [], 64) })
         await this.execRaw('COMMIT', [])
         return r
       } catch (e) {
@@ -114,6 +194,7 @@ export interface DriverModule {
   columns(s: Session, ref: TableRef): Promise<ColumnInfo[]>
   indexes(s: Session, ref: TableRef): Promise<IndexInfo[]>
   ddl(s: Session, ref: TableRef, kind: ObjectKind): Promise<string>
+  foreignKeys(s: Session, ref: TableRef): Promise<ForeignKeyInfo[]>
   completion(s: Session, db: string, schema: string): Promise<Record<string, string[]>>
 }
 
@@ -126,6 +207,22 @@ export function groupColumns(rows: Cell[][]): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   for (const r of rows) (out[str(r[0])] ??= []).push(str(r[1]))
   return out
+}
+
+/** 외래 키 행들([이름, 열, 참조 스키마(MySQL은 DB), 참조 표, 참조 열]) → ForeignKeyInfo[] */
+export function groupForeignKeys(rows: Cell[][], target: (schemaOrDb: string, table: string) => TableRef): ForeignKeyInfo[] {
+  const map = new Map<string, ForeignKeyInfo>()
+  for (const r of rows) {
+    const name = str(r[0])
+    let fk = map.get(name)
+    if (!fk) {
+      fk = { name, columns: [], ref: target(str(r[2]), str(r[3])), refColumns: [] }
+      map.set(name, fk)
+    }
+    fk.columns.push(str(r[1]))
+    fk.refColumns.push(str(r[4]))
+  }
+  return [...map.values()]
 }
 
 /** 인덱스 행들([이름, unique, primary, 열]) → IndexInfo[] */

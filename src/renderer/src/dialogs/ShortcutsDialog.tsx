@@ -13,6 +13,8 @@ const GROUPS = [
       ['Tab · Enter', tk('자동 완성 넣기')],
       ['Ctrl+/', tk('주석 켜고 끄기')],
       ['Ctrl+F', tk('찾기')],
+      ['Ctrl+Shift+F', tk('SQL 정렬')],
+      ['Ctrl+Shift+E', tk('실행 계획')],
     ],
   },
   {

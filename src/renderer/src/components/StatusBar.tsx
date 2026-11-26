@@ -1,6 +1,6 @@
 // 상태 줄: 왼쪽 = 지금 탭의 위치(접속 › DB › 스키마 › 표), 오른쪽 = 그 접속의 연결 상태 · 열린 연결 수 · 버전
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, Database, Eye, FolderTree, SquareTerminal, Table2 } from 'lucide-react'
+import { ChevronRight, Database, Eye, FolderTree, Lock, ShieldAlert, SquareTerminal, Table2 } from 'lucide-react'
 import { api } from '../api'
 import { useWs } from '../ws'
 import { t } from '../i18n'
@@ -42,6 +42,8 @@ export function StatusBar() {
         )}
       </div>
       <span className="spacer" />
+      {conn?.production === true && <span className="status-item status-prod"><ShieldAlert />{t('운영 DB')}</span>}
+      {conn?.readOnly === true && <span className="status-item"><Lock />{t('읽기 전용')}</span>}
       {tab && conn && (
         <span className={`status-item conn-state ${isOn ? 'on' : connecting ? 'busy' : ''}`}>
           <span className="state-dot" />

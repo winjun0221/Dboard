@@ -3,7 +3,7 @@ import { Worker } from 'node:worker_threads'
 import { quoteIdent } from '../../shared/dialect'
 import { getLang, t } from '../../shared/i18n'
 import type { Cell, ColumnInfo, DbObject, StatementResult } from '../../shared/types'
-import { bool, groupColumns, Session, str, type DriverModule, type OnColumns, type OnRows, type Rows } from './base'
+import { bool, groupColumns, groupForeignKeys, Session, str, type DriverModule, type OnColumns, type OnRows, type Rows } from './base'
 import { dispatch, SqliteEngine, type EngineOpenOptions } from './sqlite-engine'
 
 /** 앱에서는 작업 스레드 코드(dist/main/sqlite-worker.cjs 내용)를 넣어 준다. null이면 같은 스레드에서 실행(테스트) */
@@ -76,8 +76,8 @@ export class SqliteSession extends Session {
     return [await this.call<StatementResult>('run', [sql, maxRows])]
   }
 
-  protected queryRaw(sql: string, params: Cell[]): Promise<Rows> {
-    return this.call<Rows>('query', [sql, params])
+  protected queryRaw(sql: string, params: Cell[], binLimit: number): Promise<Rows> {
+    return this.call<Rows>('query', [sql, params, binLimit])
   }
 
   protected execRaw(sql: string, params: Cell[]): Promise<number | null> {
@@ -210,6 +210,21 @@ export const sqliteDriver: DriverModule = {
       [ref.table],
     )
     return r.rows.map((row) => str(row[0]).trim() + ';').join('\n\n')
+  },
+
+  async foreignKeys(s, ref) {
+    const r = await s.query('SELECT id, seq, "table", "from", "to" FROM pragma_foreign_key_list(?, ?) ORDER BY id, seq', [ref.table, ref.db])
+    const rows: Cell[][] = []
+    for (const x of r.rows) {
+      let to = str(x[4])
+      // REFERENCES 부모 (열 없이) = 부모의 기본 키
+      if (!to) {
+        const pk = await s.query('SELECT name FROM pragma_table_info(?, ?) WHERE pk > 0 ORDER BY pk', [str(x[2]), ref.db])
+        to = str(pk.rows[Number(x[1])]?.[0])
+      }
+      rows.push([`fk_${str(x[0])}`, x[3], '', x[2], to])
+    }
+    return groupForeignKeys(rows, (_s, table) => ({ db: ref.db, schema: '', table }))
   },
 
   async completion(s, db) {

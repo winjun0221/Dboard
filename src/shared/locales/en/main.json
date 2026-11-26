@@ -25,9 +25,7 @@
   "SQLite 파일 열기": "Open SQLite file",
   "새 SQLite 파일 만들기": "Create new SQLite file",
   "SSH 개인 키 고르기": "Pick SSH private key",
-  "CSV로 저장": "Save as CSV",
   "SELECT처럼 읽기만 하는 문장만 다시 실행해서 내보낼 수 있어요": "Only read-only statements (like SELECT) can be re-run for export",
-  "CSV로 내보내기": "Export to CSV",
   "CSV 파일 고르기": "Pick a CSV file",
   "열 수 없는 주소": "Cannot open this address",
   "허용되지 않은 요청": "Request not allowed",
@@ -63,5 +61,14 @@
   "SQL 파일이 너무 커요 (256MB까지)": "The SQL file is too large (up to 256 MB)",
   "{name}: {n}번째 문장({line}번째 줄)에서 멈췄어요. 앞의 {done}개는 실행됐어요(트랜잭션 안이면 되돌렸어요).\n{error}": "{name}: stopped at statement {n} (line {line}). The {done} statements before it ran (rolled back if they were in a transaction).\n{error}",
   "구조와 데이터 중 하나는 골라 주세요": "Choose structure, data or both",
-  "내보낼 표를 골라 주세요": "Choose tables to export"
+  "내보낼 표를 골라 주세요": "Choose tables to export",
+  "SQL 파일을 실행할": "run SQL files",
+  "가져올": "import",
+  "데이터를 고칠": "edit data",
+  "읽기 전용 접속이라 {what} 수 없어요": "This is a read-only connection, so you can't {what}",
+  "읽기 전용 접속이라 데이터나 구조를 바꾸는 문장은 실행할 수 없어요": "This is a read-only connection, so statements that change data or structure can't run",
+  "값을 파일로 저장": "Save value to file",
+  "행을 찾지 못했어요. 새로고침한 뒤 다시 해 주세요.": "Couldn't find the row. Refresh and try again.",
+  "엑셀은 한 시트에 {n}행까지라 {written}행만 썼어요. 전부 필요하면 CSV로 내보내 주세요.": "Excel holds up to {n} rows per sheet, so only {written} rows were written. Export as CSV to get them all.",
+  "내보내기": "Export"
 }

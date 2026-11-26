@@ -126,5 +126,7 @@
   "표가 없어요": "No tables",
   "DDL 내보내기": "Export DDL",
   "DDL 내보내기…": "Export DDL…",
-  "이 표를 CREATE·INSERT 문으로 내보내기": "Export this table as CREATE and INSERT statements"
+  "이 표를 CREATE·INSERT 문으로 내보내기": "Export this table as CREATE and INSERT statements",
+  "데이터·구조를 바꾸는 문장, 표 고치기, 가져오기를 막아요": "Blocks statements that change data or structure, table editing and imports",
+  "편집기가 수동 커밋으로 시작하고, 데이터를 바꾸는 문장은 실행 전에 한 번 더 물어요. 탭에 빨간 줄": "Editors start in manual commit, statements that change data ask before running, and tabs get a red line"
 }

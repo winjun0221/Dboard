@@ -5,7 +5,7 @@ import { quoteIdent } from '../../shared/dialect'
 import { t } from '../../shared/i18n'
 import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult, TableRef } from '../../shared/types'
 import { toCell, toParam } from '../values'
-import { bool, elapsed, groupColumns, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
+import { bool, elapsed, groupColumns, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
 /**
  * 값 변환: 참·거짓과 작은 정수·실수만 JS 값으로, 나머지(날짜·bigint·numeric·json·배열 등)는 DB가 준 글자 그대로.
@@ -121,10 +121,10 @@ export class PgSession extends Session {
     }
   }
 
-  protected async queryRaw(sql: string, params: Cell[]): Promise<Rows> {
+  protected async queryRaw(sql: string, params: Cell[], binLimit: number): Promise<Rows> {
     try {
       const r = await this.client.query({ text: sql, values: params.map(toParam), rowMode: 'array' })
-      return { columns: await this.columnsOf(r.fields), rows: (r.rows as unknown[][]).map((row) => row.map((v) => toCell(v))) }
+      return { columns: await this.columnsOf(r.fields), rows: (r.rows as unknown[][]).map((row) => row.map((v) => toCell(v, binLimit))) }
     } catch (e) {
       throw pgError(e, sql)
     }
@@ -323,6 +323,21 @@ export const postgresDriver: DriverModule = {
     if (tc.rows[0]?.[0]) out.push(`COMMENT ON TABLE ${name} IS '${str(tc.rows[0][0]).replace(/'/g, "''")}';`)
     for (const c of cols) if (c.comment) out.push(`COMMENT ON COLUMN ${name}.${quoteIdent('postgres', c.name)} IS '${c.comment.replace(/'/g, "''")}';`)
     return out.join('\n\n')
+  },
+
+  async foreignKeys(s, ref) {
+    const r = await s.query(
+      `SELECT c.conname, a.attname, rn.nspname, rc.relname, ra.attname
+       FROM pg_constraint c
+       JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+       JOIN pg_class rc ON rc.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+       CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(col, refcol, n)
+       JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.col
+       JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = k.refcol
+       WHERE c.contype = 'f' AND n.nspname = $1 AND t.relname = $2 ORDER BY c.conname, k.n`,
+      [ref.schema, ref.table],
+    )
+    return groupForeignKeys(r.rows, (schema, table) => ({ db: ref.db, schema, table }))
   },
 
   async completion(s, _db, schema) {

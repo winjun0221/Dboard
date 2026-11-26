@@ -5,7 +5,7 @@ import { t } from '../../shared/i18n'
 import { firstKeyword, splitSql } from '../../shared/sql'
 import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult, TableRef } from '../../shared/types'
 import { formatUtc, toCell, toParam } from '../values'
-import { bool, elapsed, groupColumns, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
+import { bool, elapsed, groupColumns, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
 type Meta = { colName: string; type: { name: string }; dataLength?: number; precision?: number; scale?: number }
 type ColValue = { value: unknown; metadata: Meta }
@@ -166,7 +166,7 @@ export class MssqlSession extends Session {
     return out.length ? out : [{ sql, columns: null, rows: [], truncated: false, affected: null, ms }]
   }
 
-  protected async queryRaw(sql: string, params: Cell[]): Promise<Rows> {
+  protected async queryRaw(sql: string, params: Cell[], binLimit: number): Promise<Rows> {
     let columns: ResultColumn[] = []
     const rows: Cell[][] = []
     let got = false
@@ -176,7 +176,7 @@ export class MssqlSession extends Session {
         columns = columnsOf(m)
       },
       onRow: (r) => {
-        if (!got) rows.push(r.map((c) => value(c, 64)))
+        if (!got) rows.push(r.map((c) => value(c, binLimit)))
       },
       onDone: () => {
         if (columns.length) got = true
@@ -392,6 +392,22 @@ export const mssqlDriver: DriverModule = {
     const out = [`CREATE TABLE ${name} (\n${lines.join(',\n')}\n);`]
     for (const i of ix.filter((x) => !x.primary)) out.push(`CREATE ${i.unique ? 'UNIQUE ' : ''}INDEX ${q(i.name)} ON ${name} (${i.columns.map(q).join(', ')});`)
     return out.join('\n\nGO\n\n')
+  },
+
+  async foreignKeys(s, ref) {
+    const db = ref.db
+    const r = await s.query(
+      `SELECT fk.name, pc.name, rs.name, rt.name, rc.name
+       FROM ${sys(db, 'foreign_keys')} fk
+       JOIN ${sys(db, 'foreign_key_columns')} fkc ON fkc.constraint_object_id = fk.object_id
+       JOIN ${sys(db, 'objects')} t ON t.object_id = fk.parent_object_id JOIN ${sys(db, 'schemas')} s ON s.schema_id = t.schema_id
+       JOIN ${sys(db, 'columns')} pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+       JOIN ${sys(db, 'objects')} rt ON rt.object_id = fkc.referenced_object_id JOIN ${sys(db, 'schemas')} rs ON rs.schema_id = rt.schema_id
+       JOIN ${sys(db, 'columns')} rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+       WHERE s.name = @p1 AND t.name = @p2 ORDER BY fk.name, fkc.constraint_column_id`,
+      [ref.schema || 'dbo', ref.table],
+    )
+    return groupForeignKeys(r.rows, (schema, table) => ({ db: ref.db, schema, table }))
   },
 
   async completion(s, db, schema) {

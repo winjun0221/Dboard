@@ -174,6 +174,14 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
             </>
           )}
           <Check checked={c.showSystem} onChange={(v) => set({ showSystem: v })}>{t('시스템 DB·스키마도 보기')}</Check>
+          <div className="checks safety">
+            <Check checked={c.production === true} onChange={(v) => set({ production: v })}>
+              <b>{t('운영 DB')}</b> <span className="muted">— {t('편집기가 수동 커밋으로 시작하고, 데이터를 바꾸는 문장은 실행 전에 한 번 더 물어요. 탭에 빨간 줄')}</span>
+            </Check>
+            <Check checked={c.readOnly === true} onChange={(v) => set({ readOnly: v })}>
+              <b>{t('읽기 전용')}</b> <span className="muted">— {t('데이터·구조를 바꾸는 문장, 표 고치기, 가져오기를 막아요')}</span>
+            </Check>
+          </div>
         </div>
       )}
 

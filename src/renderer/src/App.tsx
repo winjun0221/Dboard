@@ -162,10 +162,12 @@ function Shell() {
               const c = ws.conn(tab.connId)
               const Icon = tab.kind === 'editor' ? SquareTerminal : tab.objKind === 'view' ? Eye : Table2
               const on = ws.active === tab.id
+              // 연결 색, 없고 운영 DB면 빨강
+              const tint = c?.color || (c?.production ? '#e5484d' : '')
               return (
                 <div
                   key={tab.id}
-                  className={`tab ${tab.kind} ${on ? 'on' : ''} ${drag === tab.id ? 'dragging' : ''} ${c?.color ? 'tinted' : ''}`}
+                  className={`tab ${tab.kind} ${on ? 'on' : ''} ${drag === tab.id ? 'dragging' : ''} ${tint ? 'tinted' : ''} ${c?.production ? 'prod' : ''}`}
                   role="tab"
                   aria-selected={on}
                   draggable
@@ -184,7 +186,7 @@ function Shell() {
                     { label: t('다른 탭 모두 닫기'), onClick: () => ws.closeOthers(tab.id) },
                   ])}
                   title={`${tabTitle(tab)} — ${c?.name ?? ''}`}
-                  style={c?.color ? { ['--tint' as string]: c.color } : undefined}
+                  style={tint ? { ['--tint' as string]: tint } : undefined}
                 >
                   <Icon />
                   <span className="ellipsis">{tabTitle(tab)}</span>

@@ -26,11 +26,11 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 
 ## Features
 
-- **Connections** — save, duplicate and color connections, test before saving, SSH tunnel (password or private key), SSL
+- **Connections** — save, duplicate and color connections, test before saving, SSH tunnel (password or private key), SSL, **production marking** (editors start in manual commit, data-changing statements ask first, red markers), **read-only connections**
 - **Explorer** — database → schema → tables and views → columns and indexes, table search
-- **SQL editor** — syntax highlighting, autocomplete as you type (accept with `Tab`; table names, columns of the tables in FROM, `alias.column`), run the statement at the cursor or the selection (`Ctrl+Enter`), run the whole script (`Alt+X`), cancel, query history
-- **Result grid** — smooth with tens of thousands of rows, click to sort, copy cells or ranges (paste straight into Excel), CSV export
-- **Edit table data** — edit cells, add and delete rows, undo (`Ctrl+Z`), preview the SQL before saving, save in one transaction (everything is rolled back if anything fails)
+- **SQL editor** — syntax highlighting, autocomplete as you type (accept with `Tab`; table names, columns of the tables in FROM, `alias.column`), run the statement at the cursor or the selection (`Ctrl+Enter`), run the whole script (`Alt+X`), cancel, query history, **manual commit** (commit and rollback buttons), **format SQL** (`Ctrl+Shift+F`), **execution plan** (`Ctrl+Shift+E`, without running)
+- **Result grid** — smooth with tens of thousands of rows, click to sort, copy cells or ranges (paste straight into Excel), sum/avg/min/max of the selection, record view, export to CSV, Excel, JSON, Markdown or INSERT statements
+- **Edit table data** — edit cells, add and delete rows, undo (`Ctrl+Z`), preview the SQL before saving, save in one transaction (everything is rolled back if anything fails), follow foreign keys, copy rows as INSERT/UPDATE/DELETE, value viewer (pretty JSON, images, hex, save to file)
 - **DDL and CSV import** — view and copy the CREATE statement, import CSV (UTF-8 and EUC-KR detected automatically, column mapping)
 - **SQL dump and SQL files** — export a database, schema or table as structure (DDL) and data (INSERT) into a `.sql` file (foreign-key order, auto-increment values and computed columns handled so it loads into another database), and run a `.sql` file statement by statement (stops and rolls back on error)
 - Korean and English UI, light and dark themes
@@ -52,6 +52,7 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 | `Alt+X` | Run the whole script |
 | `Ctrl+Space` · `Tab` | Show · accept autocomplete |
 | `Ctrl+/` | Toggle comment |
+| `Ctrl+Shift+F` · `Ctrl+Shift+E` | Format SQL · execution plan |
 | `Ctrl+]` | New SQL editor |
 | `Ctrl+W` · `Ctrl+Tab` | Close tab · next tab |
 | `Ctrl+S` · `Ctrl+Z` | Save table data · undo |
