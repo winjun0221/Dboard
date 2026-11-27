@@ -1,5 +1,5 @@
 // 전체 검색: 이름(드라이버 searchNames를 DB마다)과 데이터(표마다 글 열에 LIKE로 행 수)
-import { placeholder, qualify, quoteIdent } from '../shared/dialect'
+import { likeCond, placeholder, qualify, quoteIdent } from '../shared/dialect'
 import type { DataHit, SearchHit } from '../shared/types'
 import type { DriverModule, MetaOptions, Session } from './drivers/base'
 
@@ -34,12 +34,7 @@ export async function searchData(mod: DriverModule, s: Session, db: string, sche
     try {
       const cols = (await mod.columns(s, ref)).filter((c) => TEXTY.test(c.type))
       if (!cols.length) continue
-      const cond = cols.map((c, i) => {
-        const col = quoteIdent(d, c.name)
-        const p = placeholder(d, i + 1)
-        if (d === 'postgres') return `${col}::text ILIKE ${p}`
-        return d === 'mysql' ? `${col} LIKE ${p}` : `${col} LIKE ${p} ESCAPE '\\'`
-      }).join(' OR ')
+      const cond = cols.map((c, i) => likeCond(d, quoteIdent(d, c.name), placeholder(d, i + 1))).join(' OR ')
       const r = await s.query(`SELECT COUNT(*) FROM ${qualify(d, ref)} WHERE ${cond}`, cols.map(() => like))
       const count = Number(r.rows[0]?.[0] ?? 0)
       if (count > 0) out.push({ table: obj.name, columns: cols.map((c) => c.name), count, error: null })

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Columns3, KeyRound, Link2, ListTree, LoaderCircle, Lock, Plus, RotateCcw, Save, Trash2, TriangleAlert } from 'lucide-react'
 import { designSql } from '../../../shared/alter'
+import { features } from '../../../shared/features'
 import { dialectOf, FK_ACTIONS, type ConnectionInfo, type DesignColumn, type DesignForeignKey, type DesignIndex, type Dialect, type FkAction, type TableDesign } from '../../../shared/types'
 import { api, errorText, useRefreshConn } from '../api'
 import { setDirty, useWs, type TableTab } from '../ws'
@@ -15,13 +16,19 @@ const TYPES: Record<Dialect, string[]> = {
   mysql: ['INT', 'BIGINT', 'SMALLINT', 'TINYINT', 'DECIMAL(10,2)', 'DOUBLE', 'VARCHAR(255)', 'CHAR(10)', 'TEXT', 'LONGTEXT', 'DATE', 'DATETIME', 'TIMESTAMP', 'TIME', 'BOOLEAN', 'JSON', 'BLOB'],
   postgres: ['integer', 'bigint', 'smallint', 'numeric(10,2)', 'double precision', 'real', 'varchar(255)', 'text', 'boolean', 'date', 'timestamp', 'timestamptz', 'time', 'uuid', 'jsonb', 'json', 'bytea'],
   mssql: ['int', 'bigint', 'smallint', 'tinyint', 'bit', 'decimal(10,2)', 'float', 'nvarchar(255)', 'nvarchar(max)', 'varchar(255)', 'date', 'datetime2', 'datetimeoffset', 'time', 'uniqueidentifier', 'varbinary(max)'],
+  oracle: ['NUMBER(10)', 'NUMBER(19)', 'NUMBER(10,2)', 'NUMBER', 'BINARY_DOUBLE', 'VARCHAR2(255 CHAR)', 'NVARCHAR2(255)', 'CHAR(10)', 'CLOB', 'DATE', 'TIMESTAMP', 'TIMESTAMP WITH TIME ZONE', 'BLOB', 'RAW(16)'],
+  clickhouse: ['UInt32', 'UInt64', 'Int32', 'Int64', 'Float64', 'Decimal(18,2)', 'String', 'LowCardinality(String)', 'FixedString(16)', 'Date', 'Date32', 'DateTime', 'DateTime64(3)', 'Bool', 'UUID', 'Array(String)', 'Map(String, String)'],
+  duckdb: ['INTEGER', 'BIGINT', 'SMALLINT', 'DECIMAL(10,2)', 'DOUBLE', 'FLOAT', 'VARCHAR', 'BOOLEAN', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'TIME', 'UUID', 'BLOB', 'INTEGER[]', 'VARCHAR[]'],
 }
 
+/** 새 열의 기본 타입 */
+const TEXT_TYPE: Record<Dialect, string> = { sqlite: 'TEXT', mysql: 'VARCHAR(255)', postgres: 'text', mssql: 'nvarchar(255)', oracle: 'VARCHAR2(255 CHAR)', clickhouse: 'String', duckdb: 'VARCHAR' }
+
 function newDesign(d: Dialect): TableDesign {
-  const idType = { sqlite: 'INTEGER', mysql: 'INT', postgres: 'integer', mssql: 'int' }[d]
+  const idType = { sqlite: 'INTEGER', mysql: 'INT', postgres: 'integer', mssql: 'int', oracle: 'NUMBER(10)', clickhouse: 'UInt64', duckdb: 'INTEGER' }[d]
   return {
     name: '', comment: '', primaryKey: ['id'], pkName: '', indexes: [], foreignKeys: [], unsupported: [],
-    columns: [{ name: 'id', type: idType, nullable: false, default: '', autoIncrement: true, comment: '', generated: false, orig: null }],
+    columns: [{ name: 'id', type: idType, nullable: false, default: '', autoIncrement: features(d).autoIncrement, comment: '', generated: false, orig: null }],
   }
 }
 
@@ -75,7 +82,8 @@ export function DesignView({ tab, conn, active }: { tab: TableTab; conn: Connect
     setDirty(tab.id, dirty)
   }, [tab.id, dirty])
 
-  const here = d === 'mysql' ? tab.ref.db : d === 'sqlite' ? '' : tab.ref.schema || (d === 'mssql' ? 'dbo' : 'public')
+  const f = features(d)
+  const here = d === 'mysql' || d === 'clickhouse' ? tab.ref.db : d === 'sqlite' ? '' : tab.ref.schema || (({ mssql: 'dbo', duckdb: 'main', oracle: '' } as Partial<Record<Dialect, string>>)[d] ?? 'public')
   const readOnly = conn.readOnly === true
   const beforeCol = new Map((before?.columns ?? []).map((c) => [c.name, c]))
 
@@ -113,7 +121,7 @@ export function DesignView({ tab, conn, active }: { tab: TableTab; conn: Connect
     if (section === 'columns') {
       let n = x.columns.length + 1
       while (x.columns.some((c) => c.name === `column${n}`)) n++
-      x.columns.push({ name: `column${n}`, type: { sqlite: 'TEXT', mysql: 'VARCHAR(255)', postgres: 'text', mssql: 'nvarchar(255)' }[d], nullable: true, default: '', autoIncrement: false, comment: '', generated: false, orig: null })
+      x.columns.push({ name: `column${n}`, type: TEXT_TYPE[d], nullable: true, default: '', autoIncrement: false, comment: '', generated: false, orig: null })
     } else if (section === 'indexes') {
       let n = x.indexes.length + 1
       while (x.indexes.some((ix) => ix.name === `ix_${table}_${n}`)) n++
@@ -183,13 +191,13 @@ export function DesignView({ tab, conn, active }: { tab: TableTab; conn: Connect
   if (!tab.newTable && q.error) return <div className="banner error">{errorText(q.error)}</div>
 
   const sections: { value: Section; label: string; icon: typeof Columns3; n: number }[] = [
-    { value: 'columns', label: t('열|column'), icon: Columns3, n: draft.columns.length },
-    { value: 'indexes', label: t('인덱스'), icon: ListTree, n: draft.indexes.length },
-    { value: 'fks', label: t('외래 키'), icon: Link2, n: draft.foreignKeys.length },
+    { value: 'columns' as const, label: t('열|column'), icon: Columns3, n: draft.columns.length },
+    ...(f.designIndexes ? [{ value: 'indexes' as const, label: t('인덱스'), icon: ListTree, n: draft.indexes.length }] : []),
+    ...(f.foreignKeys ? [{ value: 'fks' as const, label: t('외래 키'), icon: Link2, n: draft.foreignKeys.length }] : []),
   ]
   const actionSelect = (v: FkAction, on: (a: FkAction) => void, label: string) => (
     <select className="cell-input" aria-label={label} value={v} onChange={(e) => on(e.target.value as FkAction)}>
-      {FK_ACTIONS.filter((a) => d !== 'mssql' || a !== 'RESTRICT').map((a) => <option key={a} value={a}>{a}</option>)}
+      {FK_ACTIONS.filter((a) => (d !== 'mssql' || a !== 'RESTRICT') && (d !== 'oracle' || a === 'NO ACTION' || a === 'CASCADE' || a === 'SET NULL')).map((a) => <option key={a} value={a}>{a}</option>)}
     </select>
   )
 
@@ -247,7 +255,8 @@ export function DesignView({ tab, conn, active }: { tab: TableTab; conn: Connect
                 const b = c.orig !== null ? beforeCol.get(c.orig) : undefined
                 const state = !b ? 'added' : JSON.stringify({ ...b, orig: null }) !== JSON.stringify({ ...c, orig: null }) ? 'changed' : ''
                 const pk = draft.primaryKey.includes(c.name)
-                const lockAuto = d === 'mssql' && !!b
+                // SQL Server는 IDENTITY를 못 바꾸고, Oracle은 있는 열을 IDENTITY로 못 바꾼다. DuckDB·ClickHouse는 자동 증가가 없다
+                const lockAuto = !f.autoIncrement || (!!b && (d === 'mssql' || (d === 'oracle' && !b.autoIncrement)))
                 return (
                   <tr key={i} className={state}>
                     <td className="narrow"><input type="checkbox" aria-label={t('기본 키')} checked={pk} disabled={c.generated} onChange={(e) => togglePk(i, e.target.checked)} /></td>
@@ -260,7 +269,7 @@ export function DesignView({ tab, conn, active }: { tab: TableTab; conn: Connect
                     <td className="narrow"><input type="checkbox" aria-label={t('NULL 허용')} checked={c.nullable} disabled={c.generated} onChange={(e) => updateCol(i, { nullable: e.target.checked })} /></td>
                     <td><input className="cell-input mono" aria-label={t('기본값')} value={c.default} disabled={c.generated || (c.autoIncrement && d !== 'mysql')} spellCheck={false} placeholder={d === 'mssql' ? "N'…'" : "'…'"} onChange={(e) => updateCol(i, { default: e.target.value })} /></td>
                     <td className="narrow">
-                      <input type="checkbox" aria-label={t('자동 증가')} checked={c.autoIncrement} disabled={c.generated || lockAuto} title={lockAuto ? t('SQL Server는 이미 있는 열의 IDENTITY를 바꿀 수 없어요') : undefined}
+                      <input type="checkbox" aria-label={t('자동 증가')} checked={c.autoIncrement} disabled={c.generated || lockAuto} title={!f.autoIncrement ? t('이 DB에는 자동 증가 열이 없어요') : lockAuto ? t('이미 있는 열의 자동 증가는 바꿀 수 없어요') : undefined}
                         onChange={(e) => updateCol(i, { autoIncrement: e.target.checked, ...(e.target.checked && d !== 'mysql' ? { default: '' } : {}) })} />
                     </td>
                     {d !== 'sqlite' && <td><input className="cell-input" aria-label={t('설명')} value={c.comment} disabled={c.generated} onChange={(e) => updateCol(i, { comment: e.target.value })} /></td>}

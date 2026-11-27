@@ -19,8 +19,9 @@ export async function compareSchemas(src: Side, dst: Side): Promise<CompareResul
   const d: Dialect = dst.mod.dialect
   const w = { db: dst.db, schema: dst.schema }
   // 원본의 참조 스키마(MySQL은 DB) → 대상
-  const srcHome = d === 'mysql' ? src.db : src.schema
-  const dstHome = d === 'mysql' ? dst.db : dst.schema
+  const byDb = d === 'mysql' || d === 'clickhouse'
+  const srcHome = byDb ? src.db : src.schema
+  const dstHome = byDb ? dst.db : dst.schema
   const mapSchema = (s: string) => (!s || s.toLowerCase() === srcHome.toLowerCase() ? dstHome : s)
   const so = await src.mod.objects(src.s, src.db, src.schema, src.o)
   const to = await dst.mod.objects(dst.s, dst.db, dst.schema, dst.o)

@@ -15,7 +15,7 @@ export type MenuItem =
   | undefined
   | ''
 
-interface Ui {
+export interface Ui {
   notify(text: string, kind?: Toast['kind']): void
   /** 대화 상자 열기. render가 받는 close를 부르면 닫힘 */
   open(render: (close: () => void) => ReactNode): void

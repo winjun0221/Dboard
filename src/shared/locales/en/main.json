@@ -12,8 +12,6 @@
   "잘못된 요청": "Invalid request",
   "실행할 SQL이 없어요": "No SQL to run",
   "잘못된 값": "Invalid value",
-  "SQLite 파일은 전체 경로로 적어 주세요": "Enter the full path of the SQLite file",
-  "SQLite 파일을 골라 주세요": "Pick a SQLite file",
   "호스트를 적어 주세요": "Enter a host",
   "포트를 적어 주세요": "Enter a port",
   "SSH 호스트와 사용자를 적어 주세요": "Enter the SSH host and user",

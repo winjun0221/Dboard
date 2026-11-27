@@ -1,7 +1,7 @@
 // 열린 연결 관리: 접속 정보 하나당 터널 + 시스템 표 읽는 연결(PostgreSQL은 DB마다) + SQL 편집기 탭마다 연결 하나
 // Electron을 쓰지 않아서 테스트에서 그대로 쓴다.
 import { t } from '../shared/i18n'
-import type { ConnectionConfig } from '../shared/types'
+import { isFileDriver, type ConnectionConfig } from '../shared/types'
 import type { DriverModule, Endpoint, Session } from './drivers/base'
 import { driverOf } from './drivers'
 import { openTunnel, type HostKeys, type Tunnel } from './tunnel'
@@ -92,7 +92,7 @@ export class Manager {
       const c = r.config
       let tunnel: Tunnel | null = null
       let endpoint: Endpoint = { host: c.host, port: c.port }
-      if (c.ssh.enabled && c.driver !== 'sqlite') {
+      if (c.ssh.enabled && !isFileDriver(c.driver)) {
         tunnel = await openTunnel(c.ssh, { password: r.sshPassword, passphrase: r.sshPassphrase }, endpoint, this.hostKeys)
         endpoint = { host: '127.0.0.1', port: tunnel.port }
       }

@@ -1,7 +1,9 @@
 // 접속 정보 만들기·고치기: 종류 고르기 → 일반(호스트·사용자·비밀번호·SSL) / SSH 터널 → 연결 시험 → 저장
 import { useState } from 'react'
-import { CircleCheck, CircleAlert, FilePlus2, FolderOpen, LoaderCircle, Plug, ShieldCheck } from 'lucide-react'
-import { DEFAULT_PORTS, DRIVER_KINDS, newConnection, type ConnectionConfig, type ConnectionInfo, type DriverKind, type SecretsInput, type SslMode } from '../../../shared/types'
+import { useQuery } from '@tanstack/react-query'
+import { CircleCheck, CircleAlert, FilePlus2, FolderOpen, HardDriveDownload, LoaderCircle, Plug, ShieldCheck } from 'lucide-react'
+import { DEFAULT_PORTS, DRIVER_KINDS, isFileDriver, newConnection, type ConnectionConfig, type ConnectionInfo, type DriverKind, type SecretsInput, type SslMode } from '../../../shared/types'
+import { EngineDialog, ensureDuckdbEngine } from './EngineDialog'
 import { Check, Dialog, Field, Tabs } from '../components/Dialog'
 import { DriverBadge } from '../components/DriverBadge'
 import { api, errorText } from '../api'
@@ -25,7 +27,9 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
   const saved = initial?.saved ?? { password: false, sshPassword: false, sshPassphrase: false }
   const set = (patch: Partial<ConnectionConfig>) => setC((x) => ({ ...x, ...patch }))
   const setSsh = (patch: Partial<ConnectionConfig['ssh']>) => setC((x) => ({ ...x, ssh: { ...x.ssh, ...patch } }))
-  const isFile = c.driver === 'sqlite'
+  const isFile = isFileDriver(c.driver)
+  // DuckDB 엔진은 처음 쓸 때 받는다 → 접속 창에 있는지 보여 준다
+  const engine = useQuery({ queryKey: ['engine-status'], queryFn: () => api.engineStatus(), enabled: c.driver === 'duckdb' })
 
   const pickDriver = (d: DriverKind) => {
     if (d === c.driver) return
@@ -36,10 +40,10 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
       driver: d,
       port: x.port === DEFAULT_PORTS[x.driver] || !x.port ? fresh.port : x.port,
       user: x.user === newConnection(x.driver).user ? fresh.user : x.user,
-      host: d === 'sqlite' ? x.host : x.host || 'localhost',
+      host: isFileDriver(d) ? x.host : x.host || 'localhost',
       ssl: x.ssl === newConnection(x.driver).ssl ? fresh.ssl : x.ssl,
     }))
-    if (d === 'sqlite') setTab('general')
+    if (isFileDriver(d)) setTab('general')
   }
 
   const autoName = () => {
@@ -49,6 +53,8 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
   }
 
   const runTest = async () => {
+    if (c.driver === 'duckdb' && !(await ensureDuckdbEngine(ui))) return
+    void engine.refetch()
     setTest({ state: 'busy', text: '' })
     try {
       const r = await api.testConnection({ ...c, name: autoName() }, secrets)
@@ -70,7 +76,7 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
 
   const pickFile = async (mode: 'open' | 'create') => {
     try {
-      const f = await api.pickSqliteFile(mode)
+      const f = await api.pickDbFile(c.driver === 'duckdb' ? 'duckdb' : 'sqlite', mode)
       if (f) set({ file: f })
     } catch (e) {
       ui.notify(errorText(e), 'error')
@@ -116,7 +122,11 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
           </button>
         ))}
       </div>
-      <p className="muted small compat">{t('TiDB 등 MySQL 호환 DB는 MySQL로, CockroachDB·TimescaleDB 등 PostgreSQL 호환 DB는 PostgreSQL로, Azure SQL은 SQL Server로 연결하세요.')}</p>
+      <p className="muted small compat">{c.driver === 'clickhouse'
+        ? t('ClickHouse는 HTTP 포트(기본 8123, HTTPS는 8443)로 연결해요.')
+        : c.driver === 'oracle'
+          ? t('Oracle 12.1 이상에 바로 연결해요 (Instant Client 필요 없음).')
+          : t('TiDB 등 MySQL 호환 DB는 MySQL로, CockroachDB·TimescaleDB 등 PostgreSQL 호환 DB는 PostgreSQL로, Azure SQL은 SQL Server로 연결하세요.')}</p>
 
       {!isFile && <Tabs value={tab} onChange={setTab} tabs={[{ value: 'general', label: t('일반') }, { value: 'ssh', label: c.ssh.enabled ? t('SSH 터널 (사용)') : t('SSH 터널') }]} />}
 
@@ -133,13 +143,25 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
             </div>
           </Field>
           {isFile ? (
-            <Field label={t('SQLite 파일')} hint={t('파일이 없으면 "새 파일"로 만드세요.')}>
-              <div className="row-input">
-                <input value={c.file} onChange={(e) => set({ file: e.target.value })} placeholder={'C:\\data\\app.db'} className="mono" />
-                <button type="button" className="btn" onClick={() => pickFile('open')}><FolderOpen />{t('찾아보기')}</button>
-                <button type="button" className="btn" onClick={() => pickFile('create')}><FilePlus2 />{t('새 파일')}</button>
-              </div>
-            </Field>
+            <>
+              <Field label={t('{db} 파일', { db: DRIVER_LABEL[c.driver] })} hint={c.driver === 'duckdb' ? t('없는 파일은 처음 연결할 때 만들어져요.') : t('파일이 없으면 "새 파일"로 만드세요.')}>
+                <div className="row-input">
+                  <input value={c.file} onChange={(e) => set({ file: e.target.value })} placeholder={c.driver === 'duckdb' ? 'C:\\data\\app.duckdb' : 'C:\\data\\app.db'} className="mono" />
+                  <button type="button" className="btn" onClick={() => pickFile('open')}><FolderOpen />{t('찾아보기')}</button>
+                  <button type="button" className="btn" onClick={() => pickFile('create')}><FilePlus2 />{t('새 파일')}</button>
+                </div>
+              </Field>
+              {c.driver === 'duckdb' && engine.data && (
+                <div className="engine-note small">
+                  {engine.data.installed
+                    ? <span className="with-icon muted"><CircleCheck className="ok-icon" />{t('DuckDB 엔진 {version} 준비됨', { version: engine.data.version })}</span>
+                    : <>
+                        <span className="muted">{t('DuckDB 엔진(약 {size}MB)을 처음 한 번 받아야 해요.', { size: (engine.data.size / 1_000_000).toFixed(0) })}</span>
+                        <button type="button" className="btn" onClick={() => ui.open((close) => <EngineDialog onDone={() => { close(); void engine.refetch() }} />)}><HardDriveDownload />{t('엔진 받기…')}</button>
+                      </>}
+                </div>
+              )}
+            </>
           ) : (
             <>
               <div className="two fit">
@@ -150,7 +172,7 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
                   <input type="number" value={c.port || ''} onChange={(e) => set({ port: Number(e.target.value) || 0 })} style={{ width: 110 }} />
                 </Field>
               </div>
-              <Field label={t('DB')} hint={c.driver === 'postgres' ? t('비우면 postgres') : c.driver === 'mssql' ? t('비우면 master') : t('비워도 돼요 (탐색기에서 고름)')}>
+              <Field label={c.driver === 'oracle' ? t('서비스 이름') : t('DB')} hint={c.driver === 'postgres' ? t('비우면 postgres') : c.driver === 'mssql' ? t('비우면 master') : c.driver === 'oracle' ? t('예: ORCLPDB1, XEPDB1, FREEPDB1') : c.driver === 'clickhouse' ? t('비우면 default') : t('비워도 돼요 (탐색기에서 고름)')}>
                 <input value={c.database} onChange={(e) => set({ database: e.target.value })} />
               </Field>
               <div className="two">
@@ -164,7 +186,7 @@ export function ConnectionDialog({ initial, driver, onClose, onSaved }: { initia
               <Check checked={c.savePassword} onChange={(v) => set({ savePassword: v })}>
                 <span className="with-icon"><ShieldCheck className="small-icon" />{t('비밀번호 저장 (Windows 계정 암호화로 저장, 끄면 연결할 때마다 물어봄)')}</span>
               </Check>
-              <Field label={c.driver === 'mssql' ? t('암호화') : t('SSL')}>
+              <Field label={c.driver === 'mssql' ? t('암호화') : c.driver === 'clickhouse' ? t('HTTPS') : t('SSL')}>
                 <select value={c.ssl} onChange={(e) => set({ ssl: e.target.value as SslMode })}>
                   <option value="off">{t('끔')}</option>
                   <option value="require">{t('켬 (인증서 확인 안 함)')}</option>

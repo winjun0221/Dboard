@@ -326,7 +326,7 @@ export const mysqlDriver: DriverModule = {
   },
 
   async source(s, db, _schema, kind, id) {
-    if (kind === 'sequence') throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
+    if (kind === 'sequence' || kind === 'package') throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
     const word = { procedure: 'PROCEDURE', function: 'FUNCTION', trigger: 'TRIGGER', event: 'EVENT' }[kind]
     const r = await s.query(`SHOW CREATE ${word} ${quoteIdent('mysql', db)}.${quoteIdent('mysql', id)}`)
     // 원본 칸: 프로시저·함수·트리거는 세 번째, 이벤트는 네 번째. 권한이 없으면 NULL

@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { readJson, readXlsx } from './tabular'
 import { countSql, selectAll, selectPage } from '../shared/dialect'
-import { buildChange, buildInsertMany, selectCell } from '../shared/edit'
+import { features } from '../shared/features'
+import { buildChange, selectCell } from '../shared/edit'
 import { decodeText, detectDelimiter, detectEncoding, parseCsv } from '../shared/csv'
 import { writeExport } from './export'
 import { t } from '../shared/i18n'
@@ -12,6 +13,8 @@ import { elapsed, type Session } from './drivers/base'
 import type { Live } from './conn'
 
 const keyCache = new Map<string, TableKey>()
+/** 가져오기: 한 번에 넣는 행 수 (실패하면 몇 번째 행인지 알린다) */
+const IMPORT_CHUNK = 5000
 const keyId = (live: Live, ref: TableRef) => `${live.config.id}\u0000${ref.db}\u0000${ref.schema}\u0000${ref.table}`
 
 /** 행을 찾는 열: 기본 키 → SQLite rowid → 모든 열 */
@@ -25,8 +28,8 @@ export async function tableKey(live: Live, ref: TableRef, refresh = false): Prom
   const pk = cols.filter((c) => c.pk).map((c) => c.name)
   let key: TableKey
   if (pk.length) key = { kind: 'pk', columns: pk }
-  else if (live.mod.dialect === 'sqlite') {
-    // 뷰는 rowid가 없다
+  else if (features(live.mod.dialect).rowid) {
+    // 뷰는 rowid가 없다 (SQLite _rowid_, DuckDB rowid, Oracle ROWID)
     const objs = await live.mod.objects(s, ref.db, ref.schema, { showSystem: true })
     const isView = objs.find((o) => o.name === ref.table)?.kind === 'view'
     key = isView ? { kind: 'all', columns: cols.map((c) => c.name) } : { kind: 'rowid', columns: [] }
@@ -160,17 +163,21 @@ export async function importCsv(live: Live, ref: TableRef, file: string, o: Impo
       return o.emptyAsNull && v === '' ? null : v
     }))
   const s = await live.metaSession(ref.db)
-  const stmts = buildInsertMany(live.mod.dialect, ref, picks.map((p) => p.col), rows)
+  const cols = picks.map((p) => p.col)
+  const noTx = !features(live.mod.dialect).transactions
   return s.transaction(async (tx) => {
     let done = 0
-    for (const b of stmts) {
+    for (let i = 0; i < rows.length; i += IMPORT_CHUNK) {
+      const chunk = rows.slice(i, i + IMPORT_CHUNK)
       try {
-        await tx.exec(b.sql, b.params)
+        await tx.insertMany(ref, cols, chunk)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        throw new Error(t('{from}~{to}번째 행을 넣다가 실패해서 하나도 넣지 않았어요.\n{error}', { from: done + 1, to: done + (b.rows ?? 0), error: msg }))
+        // ClickHouse는 트랜잭션이 없어 앞에서 넣은 행은 남는다
+        if (noTx) throw new Error(t('{from}~{to}번째 행을 넣다가 실패했어요. 그 앞의 {done}행은 이미 들어갔어요 (트랜잭션이 없는 DB).\n{error}', { from: done + 1, to: done + chunk.length, done, error: msg }))
+        throw new Error(t('{from}~{to}번째 행을 넣다가 실패해서 하나도 넣지 않았어요.\n{error}', { from: done + 1, to: done + chunk.length, error: msg }))
       }
-      done += b.rows ?? 0
+      done += chunk.length
     }
     return done
   })

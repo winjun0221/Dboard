@@ -1,13 +1,13 @@
 // 칸 값 보여 주기·접속 종류 이름과 색
-import { isBin, type Cell, type DriverKind, type ConnectionConfig } from '../../shared/types'
+import { isBin, isFileDriver, type Cell, type DriverKind, type ConnectionConfig } from '../../shared/types'
 
-export const DRIVER_LABEL: Record<DriverKind, string> = { sqlite: 'SQLite', mysql: 'MySQL', mariadb: 'MariaDB', postgres: 'PostgreSQL', mssql: 'SQL Server' }
-export const DRIVER_SHORT: Record<DriverKind, string> = { sqlite: 'SL', mysql: 'My', mariadb: 'Ma', postgres: 'Pg', mssql: 'MS' }
-export const DRIVER_COLOR: Record<DriverKind, string> = { sqlite: '#0e9fd8', mysql: '#e48e00', mariadb: '#b0703c', postgres: '#3d6fd8', mssql: '#d9443f' }
+export const DRIVER_LABEL: Record<DriverKind, string> = { sqlite: 'SQLite', mysql: 'MySQL', mariadb: 'MariaDB', postgres: 'PostgreSQL', mssql: 'SQL Server', oracle: 'Oracle', clickhouse: 'ClickHouse', duckdb: 'DuckDB' }
+export const DRIVER_SHORT: Record<DriverKind, string> = { sqlite: 'SL', mysql: 'My', mariadb: 'Ma', postgres: 'Pg', mssql: 'MS', oracle: 'Or', clickhouse: 'CH', duckdb: 'Dk' }
+export const DRIVER_COLOR: Record<DriverKind, string> = { sqlite: '#0e9fd8', mysql: '#e48e00', mariadb: '#b0703c', postgres: '#3d6fd8', mssql: '#d9443f', oracle: '#b8472f', clickhouse: '#a88b00', duckdb: '#4f8a3c' }
 
 /** 접속 설명 한 줄: 호스트:포트/DB 또는 파일 이름 */
 export function connSummary(c: ConnectionConfig): string {
-  if (c.driver === 'sqlite') return c.file.split(/[\\/]/).pop() || ''
+  if (isFileDriver(c.driver)) return c.file.split(/[\\/]/).pop() || ''
   return `${c.host}${c.port ? ':' + c.port : ''}${c.database ? '/' + c.database : ''}`
 }
 

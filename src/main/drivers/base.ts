@@ -1,6 +1,9 @@
 // 드라이버 공통 틀: DB 연결 하나(Session)와 DB 종류별 모듈(DriverModule — 연결 열기 + 시스템 표 읽기)
 // 새 DB 종류를 붙이려면 이 두 가지를 구현하고 drivers/index.ts에 등록한다.
 import { beginSql } from '../../shared/dialect'
+import { buildInsertMany } from '../../shared/edit'
+import { features } from '../../shared/features'
+import { t } from '../../shared/i18n'
 import { firstKeyword, mask } from '../../shared/sql'
 import type {
   DbUser,
@@ -36,6 +39,8 @@ export type OnRows = (rows: Cell[][]) => void | Promise<void>
 export interface Tx {
   exec(sql: string, params?: Cell[]): Promise<number | null>
   query(sql: string, params?: Cell[]): Promise<Rows>
+  /** 여러 행 넣기 (가져오기·데이터 옮기기). 넣은 행 수 */
+  insertMany(ref: TableRef, columns: string[], rows: Cell[][]): Promise<number>
 }
 
 /** DB 연결 하나. 한 번에 한 작업만(차례대로) — SQL Server 드라이버는 동시에 두 요청을 못 보낸다 */
@@ -46,8 +51,10 @@ export abstract class Session {
   private chain: Promise<unknown> = Promise.resolve()
   /** 수동 커밋 (편집기 연결만). MySQL autocommit=0, SQL Server IMPLICIT_TRANSACTIONS, PostgreSQL·SQLite는 우리가 BEGIN */
   private manual = false
-  /** PostgreSQL·SQLite: 우리가 연 트랜잭션이 열려 있는지 */
+  /** PostgreSQL·SQLite·DuckDB: 우리가 연 트랜잭션이 열려 있는지 */
   private txOpen = false
+  /** transaction() 안 (Oracle 드라이버가 문장마다 자동 커밋하지 않게) */
+  protected inTransaction = false
 
   protected lock<T>(fn: () => Promise<T>): Promise<T> {
     const r = this.chain.then(fn, fn)
@@ -62,6 +69,15 @@ export abstract class Session {
   /** 바뀐 행 수 */
   protected abstract execRaw(sql: string, params: Cell[]): Promise<number | null>
   protected abstract streamRaw(sql: string, onColumns: OnColumns, onRows: OnRows): Promise<number>
+  /** 여러 행 INSERT. 기본은 여러 행 VALUES 문장들 (Oracle은 executeMany로 바꿔 쓴다) */
+  protected async insertManyRaw(ref: TableRef, columns: string[], rows: Cell[][]): Promise<number> {
+    let n = 0
+    for (const b of buildInsertMany(this.dialect, ref, columns, rows)) {
+      await this.execRaw(b.sql, b.params)
+      n += b.rows ?? 0
+    }
+    return n
+  }
   /** 실행 중인 문장 취소 (차례를 기다리지 않음) */
   abstract cancel(): Promise<void>
   abstract close(): Promise<void>
@@ -81,8 +97,12 @@ export abstract class Session {
   /** 수동 커밋 켜고 끄기. 끌 때 남은 트랜잭션은 되돌린다 (화면이 먼저 커밋·롤백을 묻는다) */
   async setManualCommit(on: boolean) {
     if (on === this.manual) return
+    if (on && !features(this.dialect).transactions) throw new Error(t('이 DB는 트랜잭션이 없어서 수동 커밋을 쓸 수 없어요'))
     await this.lock(async () => {
-      if (this.dialect === 'mysql') {
+      if (this.dialect === 'oracle') {
+        // Oracle은 트랜잭션이 저절로 열린다: 드라이버가 수동이면 자동 커밋을 끈다
+        if (!on) await this.execRaw('ROLLBACK', [])
+      } else if (this.dialect === 'mysql') {
         if (!on) await this.execRaw('ROLLBACK', [])
         await this.execRaw(`SET autocommit = ${on ? 0 : 1}`, [])
       } else if (this.dialect === 'mssql') {
@@ -96,10 +116,10 @@ export abstract class Session {
     })
   }
 
-  /** 편집기 실행. 수동 커밋이면 PostgreSQL·SQLite는 트랜잭션을 열고,
+  /** 편집기 실행. 수동 커밋이면 PostgreSQL·SQLite·DuckDB는 트랜잭션을 열고,
    *  PostgreSQL은 문장마다 SAVEPOINT로 감싸 오류가 나도 앞의 작업이 살아 있게 한다 (오류 = 트랜잭션 전체 중단을 막음) */
   runManaged(sql: string, maxRows: number) {
-    if (!this.manual || (this.dialect !== 'postgres' && this.dialect !== 'sqlite')) return this.run(sql, maxRows)
+    if (!this.manual || (this.dialect !== 'postgres' && this.dialect !== 'sqlite' && this.dialect !== 'duckdb')) return this.run(sql, maxRows)
     return this.lock(async () => {
       const kw = firstKeyword(sql, this.dialect)
       if (TX_WORDS.has(kw)) {
@@ -112,7 +132,7 @@ export abstract class Session {
         await this.execRaw('BEGIN', [])
         this.txOpen = true
       }
-      if (this.dialect === 'sqlite') return this.runRaw(sql, maxRows)
+      if (this.dialect !== 'postgres') return this.runRaw(sql, maxRows)
       await this.execRaw('SAVEPOINT dboard_sp', [])
       try {
         const r = await this.runRaw(sql, maxRows)
@@ -131,7 +151,8 @@ export abstract class Session {
     return this.lock(async () => {
       const word = commit ? 'COMMIT' : 'ROLLBACK'
       if (this.dialect === 'mssql') await this.execRaw(`IF @@TRANCOUNT > 0 ${word} TRANSACTION`, [])
-      else if (this.dialect === 'mysql') await this.execRaw(word, [])
+      else if (this.dialect === 'mysql' || this.dialect === 'oracle') await this.execRaw(word, [])
+      else if (this.dialect === 'clickhouse') return
       else if (this.txOpen) {
         await this.execRaw(word, [])
         this.txOpen = false
@@ -139,10 +160,11 @@ export abstract class Session {
     })
   }
 
-  /** 읽기 전용 접속: 서버 쪽에서도 막는다 (SQL Server는 세션 설정이 없어 메인의 문장 검사만) */
+  /** 읽기 전용 접속: 서버 쪽에서도 막는다 (SQL Server·Oracle은 세션 설정이 없어 메인의 문장 검사만, ClickHouse·DuckDB는 드라이버가 따로) */
   async applyReadOnly() {
-    const sql = { mysql: 'SET SESSION TRANSACTION READ ONLY', postgres: 'SET default_transaction_read_only = on', sqlite: 'PRAGMA query_only = ON', mssql: '' }[this.dialect]
-    if (sql) await this.exec(sql)
+    const sql: Partial<Record<Dialect, string>> = { mysql: 'SET SESSION TRANSACTION READ ONLY', postgres: 'SET default_transaction_read_only = on', sqlite: 'PRAGMA query_only = ON' }
+    const s = sql[this.dialect]
+    if (s) await this.exec(s)
   }
 
   query(sql: string, params: Cell[] = [], binLimit = 64) {
@@ -157,12 +179,20 @@ export abstract class Session {
     return this.lock(() => this.streamRaw(sql, onColumns, onRows))
   }
 
-  /** 여러 문장을 한 트랜잭션으로. 실패하면 되돌린다 */
+  /** 여러 문장을 한 트랜잭션으로. 실패하면 되돌린다 (ClickHouse는 트랜잭션이 없어 그냥 차례로) */
   transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
     return this.lock(async () => {
-      await this.execRaw(beginSql(this.dialect), [])
+      const tx: Tx = {
+        exec: (s, p) => this.execRaw(s, p ?? []),
+        query: (s, p) => this.queryRaw(s, p ?? [], 64),
+        insertMany: (ref, cols, rows) => this.insertManyRaw(ref, cols, rows),
+      }
+      if (!features(this.dialect).transactions) return fn(tx)
+      const begin = beginSql(this.dialect)
+      if (begin) await this.execRaw(begin, [])
+      this.inTransaction = true
       try {
-        const r = await fn({ exec: (s, p) => this.execRaw(s, p ?? []), query: (s, p) => this.queryRaw(s, p ?? [], 64) })
+        const r = await fn(tx)
         await this.execRaw('COMMIT', [])
         return r
       } catch (e) {
@@ -172,6 +202,8 @@ export abstract class Session {
           // 연결이 끊긴 경우 등 — 원래 오류를 알려 준다
         }
         throw e
+      } finally {
+        this.inTransaction = false
       }
     })
   }

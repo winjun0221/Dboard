@@ -1,4 +1,5 @@
 // 작업 공간 상태: 접속 목록·연결 상태·열린 탭(편집기·표). 탭과 편집기 글은 localStorage에 기억(다시 켜도 그대로)
+import { defaultPlace } from '../../shared/features'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { AppSettings, ConnectionInfo, DriverKind, ObjectKind, SecretsInput, SqlFile, TableRef } from '../../shared/types'
@@ -8,6 +9,7 @@ import { t } from './i18n'
 import { randomKey } from './format'
 import { PasswordDialog } from './dialogs/PasswordDialog'
 import { ConnectionDialog } from './dialogs/ConnectionDialog'
+import { ensureDuckdbEngine } from './dialogs/EngineDialog'
 
 export type TableSub = 'data' | 'columns' | 'indexes' | 'ddl' | 'design'
 /** manual: 수동 커밋 (없으면 접속이 운영 DB일 때 켜짐). file: 연결된 .sql 파일, modified: 파일에 저장하지 않은 고침 */
@@ -101,9 +103,7 @@ export function saveText(id: string, text: string) {
 
 /** 새 편집기의 처음 DB·스키마 */
 export function defaultContext(c: ConnectionInfo): { db: string; schema: string } {
-  const db = c.database || ({ sqlite: 'main', postgres: 'postgres', mssql: 'master', mysql: '', mariadb: '' } as const)[c.driver]
-  const schema = c.driver === 'postgres' ? 'public' : c.driver === 'mssql' ? 'dbo' : ''
-  return { db, schema }
+  return defaultPlace(c)
 }
 
 export function WsProvider({ children }: { children: ReactNode }) {
@@ -151,6 +151,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
       setConnecting((s) => new Set(s).add(id))
       try {
         let prompt: SecretsInput | null = null
+        // DuckDB 엔진은 처음 쓸 때 받는다
+        if (connections.find((c) => c.id === id)?.driver === 'duckdb' && !(await ensureDuckdbEngine(ui))) return false
         for (;;) {
           const r = await api.connect(id, prompt)
           if (r.ok) {

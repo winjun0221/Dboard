@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { t } from '../shared/i18n'
-import type { ConnectionConfig, ConnectionInfo, HistoryEntry, SecretName, SecretsInput } from '../shared/types'
+import { isFileDriver, type ConnectionConfig, type ConnectionInfo, type HistoryEntry, type SecretName, type SecretsInput } from '../shared/types'
 import type { HostKeys } from './tunnel'
 
 export interface Crypto {
@@ -111,7 +111,7 @@ export class Store {
     // 쓰지 않게 된 비밀 값은 지운다 (SSH 끔, 인증 방식 바꿈)
     if (!config.ssh.enabled || config.ssh.auth !== 'password') delete secrets.sshPassword
     if (!config.ssh.enabled || config.ssh.auth !== 'key') delete secrets.sshPassphrase
-    if (config.driver === 'sqlite') delete secrets.password
+    if (isFileDriver(config.driver)) delete secrets.password
     const stored: Stored = { ...config, id, secrets }
     const next = old ? list.map((c) => (c.id === id ? stored : c)) : [...list, stored]
     this.writeAll(next)

@@ -112,8 +112,58 @@ export function normViewSql(sql: string): string {
 
 type Kind = 'tinyint' | 'smallint' | 'int' | 'bigint' | 'bool' | 'decimal' | 'real' | 'double' | 'varchar' | 'char' | 'text' | 'date' | 'time' | 'datetime' | 'tz' | 'binary' | 'json' | 'uuid' | 'other'
 
+/** ClickHouse 타입 이름 (Int8 = 1바이트 — PostgreSQL int8과 다르다) */
+const CH_KIND: Record<string, Kind> = {
+  int8: 'tinyint', uint8: 'smallint', int16: 'smallint', uint16: 'int', int32: 'int', uint32: 'bigint', int64: 'bigint',
+  uint64: 'decimal', int128: 'decimal', uint128: 'decimal', int256: 'decimal', uint256: 'decimal',
+  float32: 'real', float64: 'double', bool: 'bool', string: 'text', fixedstring: 'char', uuid: 'uuid',
+  date: 'date', date32: 'date', datetime: 'datetime', datetime64: 'datetime', decimal: 'decimal', decimal32: 'decimal', decimal64: 'decimal', decimal128: 'decimal', decimal256: 'decimal',
+  enum8: 'varchar', enum16: 'varchar', json: 'json', ipv4: 'varchar', ipv6: 'varchar',
+}
+
 function kindOf(from: Dialect, type: string): { kind: Kind; args: string } {
-  const x = low(type.trim()).replace(/\s+/g, ' ')
+  let x = low(type.trim()).replace(/\s+/g, ' ')
+  if (from === 'clickhouse') {
+    // Nullable(…)·LowCardinality(…)는 벗기고
+    for (;;) {
+      const w = /^(nullable|lowcardinality)\((.*)\)$/.exec(x)
+      if (!w) break
+      x = w[2].trim()
+    }
+    const c = /^([a-z0-9]+)\s*(?:\((.*)\))?$/.exec(x)
+    const k = c ? CH_KIND[c[1]] : undefined
+    if (!c || !k) return { kind: 'other', args: '' }
+    if (k === 'varchar') return { kind: 'varchar', args: '255' }
+    if (k === 'decimal') {
+      const bits: Record<string, string> = { uint64: '20,0', int128: '39,0', uint128: '39,0', int256: '77,0', uint256: '78,0', decimal32: '9', decimal64: '18', decimal128: '38', decimal256: '76' }
+      const p = bits[c[1]]
+      // DecimalN(s)는 자릿수가 정해져 있다
+      if (p && /^decimal\d+$/.test(c[1])) return { kind: k, args: `${p},${(c[2] ?? '0').trim()}` }
+      return { kind: k, args: p ?? (c[2] ?? '').trim() }
+    }
+    if (k === 'char') return { kind: k, args: (c[2] ?? '1').trim() }
+    return { kind: k, args: '' }
+  }
+  // Oracle: VARCHAR2(10 CHAR), TIMESTAMP(6) WITH TIME ZONE
+  if (from === 'oracle') {
+    x = x.replace(/\(\s*(\d+)\s+(char|byte)\s*\)/, '($1)').replace(/^timestamp(\s*\(\d+\))?\s+with\s+(local\s+)?time\s+zone$/, 'timestamp with time zone')
+    const num = /^number(?:\((\d+|\*)(?:\s*,\s*(-?\d+))?\))?$/.exec(x)
+    if (num) {
+      const p = num[1] === '*' || num[1] === undefined ? 0 : Number(num[1])
+      const sc = num[2] === undefined ? (num[1] ? 0 : -1) : Number(num[2])
+      if (sc === 0 && p > 0) return { kind: p <= 4 ? 'smallint' : p <= 9 ? 'int' : p <= 18 ? 'bigint' : 'decimal', args: p > 18 ? `${p},0` : '' }
+      return { kind: 'decimal', args: p ? `${p},${Math.max(0, sc)}` : '' }
+    }
+    const ora: Record<string, Kind> = { integer: 'bigint', int: 'bigint', smallint: 'bigint', date: 'datetime', binary_float: 'real', binary_double: 'double', long: 'text', nclob: 'text', raw: 'binary', 'long raw': 'binary', 'timestamp with time zone': 'tz', nvarchar2: 'varchar', boolean: 'bool', rowid: 'varchar', urowid: 'varchar' }
+    const b = /^([a-z_ 0-9]+?)\s*(?:\(([^)]*)\))?$/.exec(x)
+    if (b && ora[b[1].trim()]) return { kind: ora[b[1].trim()], args: (b[2] ?? '').trim() }
+    if (b && b[1].trim() === 'float') return { kind: 'double', args: '' }
+  }
+  if (from === 'duckdb') {
+    const duck: Record<string, Kind> = { float: 'real', hugeint: 'decimal', uhugeint: 'decimal', ubigint: 'decimal', uinteger: 'bigint', usmallint: 'int', utinyint: 'smallint', timestamp_s: 'datetime', timestamp_ms: 'datetime', timestamp_ns: 'datetime', 'timestamp with time zone': 'tz', interval: 'varchar' }
+    const k = duck[x]
+    if (k) return { kind: k, args: k === 'decimal' ? (x === 'ubigint' ? '20,0' : '38,0') : k === 'varchar' ? '100' : '' }
+  }
   const m = /^([a-z][a-z0-9_ ]*?)\s*(?:\(([^)]*)\))?\s*(unsigned|signed)?\s*(\[\])?$/.exec(x)
   if (!m || m[4]) return { kind: 'other', args: '' }
   const base = m[1].trim()
@@ -162,6 +212,19 @@ export function mapType(from: Dialect, to: Dialect, type: string): string {
       if (kind === 'char') return `char(${n || 1})`
       if (kind === 'decimal') return `numeric${dec}`
       return { tinyint: 'smallint', smallint: 'smallint', int: 'integer', bigint: 'bigint', bool: 'boolean', real: 'real', double: 'double precision', text: 'text', date: 'date', time: 'time', datetime: 'timestamp', tz: 'timestamptz', binary: 'bytea', json: 'jsonb', uuid: 'uuid' }[kind as string] ?? 'text'
+    case 'oracle':
+      if (kind === 'varchar') return n > 4000 ? 'CLOB' : `VARCHAR2(${n || 255} CHAR)`
+      if (kind === 'char') return n > 2000 ? 'CLOB' : `CHAR(${n || 1} CHAR)`
+      if (kind === 'decimal') return `NUMBER${dec}`
+      return { tinyint: 'NUMBER(3)', smallint: 'NUMBER(5)', int: 'NUMBER(10)', bigint: 'NUMBER(19)', bool: 'NUMBER(1)', real: 'BINARY_FLOAT', double: 'BINARY_DOUBLE', text: 'CLOB', date: 'DATE', time: 'VARCHAR2(20)', datetime: 'TIMESTAMP(6)', tz: 'TIMESTAMP(6) WITH TIME ZONE', binary: 'BLOB', json: 'CLOB', uuid: 'VARCHAR2(36)' }[kind as string] ?? 'CLOB'
+    case 'clickhouse':
+      if (kind === 'decimal') return `Decimal${dec || '(38,10)'}`
+      if (kind === 'char' && n > 0) return 'String'
+      return { tinyint: 'Int8', smallint: 'Int16', int: 'Int32', bigint: 'Int64', bool: 'Bool', real: 'Float32', double: 'Float64', date: 'Date32', datetime: 'DateTime64(6)', tz: 'DateTime64(6)', uuid: 'UUID' }[kind as string] ?? 'String'
+    case 'duckdb':
+      if (kind === 'varchar' || kind === 'char') return 'VARCHAR'
+      if (kind === 'decimal') return `DECIMAL${dec || '(38,10)'}`
+      return { tinyint: 'TINYINT', smallint: 'SMALLINT', int: 'INTEGER', bigint: 'BIGINT', bool: 'BOOLEAN', real: 'FLOAT', double: 'DOUBLE', text: 'VARCHAR', date: 'DATE', time: 'TIME', datetime: 'TIMESTAMP', tz: 'TIMESTAMPTZ', binary: 'BLOB', json: 'VARCHAR', uuid: 'UUID' }[kind as string] ?? 'VARCHAR'
     default:
       if (kind === 'varchar') return n > 4000 ? 'nvarchar(max)' : `nvarchar(${n || 255})`
       if (kind === 'char') return n > 4000 ? 'nvarchar(max)' : `nchar(${n || 1})`
@@ -178,8 +241,8 @@ export function mapDefault(expr: string, to: Dialect): string {
   if (/^[+-]?\d+(\.\d+)?$/.test(e)) return e
   const str = /^N?'((?:[^']|'')*)'$/s.exec(e)
   if (str) return to === 'mssql' ? `N'${str[1]}'` : `'${str[1]}'`
-  if (/^(now\(\)|current_timestamp(\(\d*\))?|getdate\(\)|sysdatetime\(\)|localtimestamp(\(\d*\))?|datetime\('now'\))$/i.test(e)) return 'CURRENT_TIMESTAMP'
-  if (/^(true|false)$/i.test(e)) return to === 'postgres' ? low(e) : low(e) === 'true' ? '1' : '0'
+  if (/^(now\(\)|now64\(\d*\)|current_timestamp(\(\d*\))?|getdate\(\)|sysdatetime\(\)|localtimestamp(\(\d*\))?|datetime\('now'\)|sysdate|systimestamp)$/i.test(e)) return to === 'clickhouse' ? 'now64(6)' : 'CURRENT_TIMESTAMP'
+  if (/^(true|false)$/i.test(e)) return to === 'postgres' || to === 'duckdb' || to === 'clickhouse' ? low(e) : low(e) === 'true' ? '1' : '0'
   return ''
 }
 
@@ -192,6 +255,7 @@ export function convertDesign(src: TableDesign, from: Dialect, to: Dialect): Tab
     if (keyCols.has(low(c.name))) {
       if (to === 'mysql' && /^(long|medium|tiny)?text$/i.test(type)) type = 'varchar(255)'
       if (to === 'mssql' && /^nvarchar\(max\)$/i.test(type)) type = 'nvarchar(450)'
+      if (to === 'oracle' && type === 'CLOB') type = 'VARCHAR2(1000 CHAR)'
     }
     const serial = /^nextval\(/i.test(c.default.trim())
     return {
@@ -212,8 +276,12 @@ export function convertDesign(src: TableDesign, from: Dialect, to: Dialect): Tab
     const ok = primaryKey.length === 1 && columns.some((c) => low(c.name) === low(primaryKey[0]) && c.type === 'INTEGER')
     for (const c of columns) if (c.autoIncrement && !(ok && low(c.name) === low(primaryKey[0]))) c.autoIncrement = false
   }
+  // DuckDB·ClickHouse에는 자동 증가가 없다 (옮기는 값은 그대로 들어간다)
+  if (to === 'duckdb' || to === 'clickhouse') for (const c of columns) c.autoIncrement = false
+  // ClickHouse 정렬 키(기본 키) 열은 NULL일 수 없다
+  if (to === 'clickhouse') for (const c of columns) if (primaryKey.some((p) => low(p) === low(c.name))) c.nullable = false
   for (const c of columns) if (c.autoIncrement && to !== 'mysql') c.default = ''
-  const indexes = src.indexes
+  const indexes = to === 'clickhouse' ? [] : src.indexes
     .filter((i) => i.columns.every((c) => names.has(low(c))))
     .map((i) => ({ name: i.name.startsWith('sqlite_') ? `uq_${src.name}_${i.columns.join('_')}` : i.name, columns: i.columns, unique: i.unique, orig: null, ...(i.constraint && to !== 'sqlite' ? { constraint: true } : {}) }))
   return {

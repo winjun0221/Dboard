@@ -1,5 +1,6 @@
 // 표 데이터 고치기 → SQL 문장. 실행은 자리 표시 + 값(params), 미리 보기는 값을 글자로 넣은 SQL
 import { beginSql, literal, maxParams, placeholder, qualify, quoteIdent } from './dialect'
+import { features } from './features'
 import { t } from './i18n'
 import { isBin, type Cell, type Dialect, type RowChange, type TableKey, type TableRef } from './types'
 
@@ -22,7 +23,7 @@ class Params {
 }
 
 function where(d: Dialect, key: TableKey, values: Cell[], p: Params): string {
-  if (key.kind === 'rowid') return `_rowid_ = ${p.add(values[0])}`
+  if (key.kind === 'rowid') return `${features(d).rowid} = ${p.add(values[0])}`
   const parts: string[] = []
   key.columns.forEach((col, i) => {
     const v = values[i]
@@ -42,19 +43,21 @@ function limitOne(d: Dialect, key: TableKey, ref: TableRef, verb: 'UPDATE' | 'DE
   if (d === 'mysql') return `${head} WHERE ${cond} LIMIT 1`
   if (d === 'mssql') return verb === 'UPDATE' ? `UPDATE TOP (1) ${t} SET ${setPart} WHERE ${cond}` : `DELETE TOP (1) FROM ${t} WHERE ${cond}`
   if (d === 'postgres') return `${head} WHERE ctid = (SELECT ctid FROM ${t} WHERE ${cond} LIMIT 1)`
+  if (d === 'oracle') return `${head} WHERE ${cond} AND ROWNUM = 1`
   return `${head} WHERE ${cond}`
 }
 
 export function buildChange(d: Dialect, ref: TableRef, key: TableKey, c: RowChange): Built {
   const p = new Params(d)
-  const t = qualify(d, ref)
+  const tn = qualify(d, ref)
   if (c.op === 'insert') {
     const cols = Object.keys(c.values)
     if (cols.length === 0) {
-      return { sql: d === 'mysql' ? `INSERT INTO ${t} () VALUES ()` : `INSERT INTO ${t} DEFAULT VALUES`, params: [], expectOne: false }
+      if (d === 'oracle') throw new Error(t('Oracle은 값이 하나도 없는 행을 넣을 수 없어요. 칸을 하나 이상 채워 주세요.'))
+      return { sql: d === 'mysql' ? `INSERT INTO ${tn} () VALUES ()` : `INSERT INTO ${tn} DEFAULT VALUES`, params: [], expectOne: false }
     }
     const vals = cols.map((col) => p.add(c.values[col]))
-    return { sql: `INSERT INTO ${t} (${cols.map((x) => quoteIdent(d, x)).join(', ')}) VALUES (${vals.join(', ')})`, params: p.list, expectOne: false }
+    return { sql: `INSERT INTO ${tn} (${cols.map((x) => quoteIdent(d, x)).join(', ')}) VALUES (${vals.join(', ')})`, params: p.list, expectOne: false }
   }
   if (c.op === 'update') {
     const set = Object.keys(c.values).map((col) => `${quoteIdent(d, col)} = ${p.add(c.values[col])}`).join(', ')
@@ -71,20 +74,25 @@ export function selectCell(d: Dialect, ref: TableRef, key: TableKey, keyValues: 
   const p = new Params(d)
   const cond = where(d, key, keyValues, p)
   const col = quoteIdent(d, column)
-  const sql = d === 'mssql' ? `SELECT TOP (1) ${col} FROM ${qualify(d, ref)} WHERE ${cond}` : `SELECT ${col} FROM ${qualify(d, ref)} WHERE ${cond} LIMIT 1`
+  const sql = d === 'mssql' ? `SELECT TOP (1) ${col} FROM ${qualify(d, ref)} WHERE ${cond}`
+    : d === 'oracle' ? `SELECT ${col} FROM ${qualify(d, ref)} WHERE ${cond} FETCH FIRST 1 ROWS ONLY`
+    : `SELECT ${col} FROM ${qualify(d, ref)} WHERE ${cond} LIMIT 1`
   return { sql, params: p.list, expectOne: false }
 }
 
 export function inlineParams(d: Dialect, b: Built): string {
-  if (d === 'postgres') return b.sql.replace(/\$(\d+)/g, (_, n: string) => literal(d, b.params[Number(n) - 1] ?? null))
+  if (d === 'postgres' || d === 'duckdb') return b.sql.replace(/\$(\d+)/g, (_, n: string) => literal(d, b.params[Number(n) - 1] ?? null))
   if (d === 'mssql') return b.sql.replace(/@p(\d+)/g, (_, n: string) => literal(d, b.params[Number(n) - 1] ?? null))
+  if (d === 'oracle') return b.sql.replace(/:(\d+)/g, (_, n: string) => literal(d, b.params[Number(n) - 1] ?? null))
   let i = 0
   // 이름은 따옴표로 감싸져 있고 ?가 들어갈 일이 드물지만, 따옴표 안은 건너뛴다
   return b.sql.replace(/("(?:[^"]|"")*"|`(?:[^`]|``)*`)|\?/g, (m, quoted: string | undefined) => (quoted ? m : literal(d, b.params[i++] ?? null)))
 }
 
 export function previewChanges(d: Dialect, ref: TableRef, key: TableKey, changes: RowChange[]): string[] {
-  return [beginSql(d), ...changesAsSql(d, ref, key, changes), 'COMMIT']
+  const body = changesAsSql(d, ref, key, changes)
+  if (!features(d).transactions) return body
+  return [beginSql(d), ...body, 'COMMIT'].filter(Boolean)
 }
 
 /** 바뀜 → 값을 글자로 넣은 SQL 문장들 (트랜잭션 없이 — 고른 행을 SQL로 복사할 때) */
@@ -92,10 +100,10 @@ export function changesAsSql(d: Dialect, ref: TableRef, key: TableKey, changes: 
   return changes.map((c) => inlineParams(d, buildChange(d, ref, key, c)))
 }
 
-/** CSV 가져오기: 여러 행 INSERT를 자리 표시 한도에 맞춰 나눈다 */
+/** CSV 가져오기: 여러 행 INSERT를 자리 표시 한도에 맞춰 나눈다 (Oracle은 19c까지 여러 행 VALUES가 없어 한 행씩 — 실행은 드라이버의 insertMany가 묶어 보낸다) */
 export function buildInsertMany(d: Dialect, ref: TableRef, columns: string[], rows: Cell[][]): Built[] {
   if (columns.length === 0 || rows.length === 0) return []
-  const perStmt = Math.max(1, Math.min(d === 'mssql' ? 1000 : 5000, Math.floor(maxParams(d) / columns.length)))
+  const perStmt = d === 'oracle' ? 1 : Math.max(1, Math.min(d === 'mssql' ? 1000 : 5000, Math.floor(maxParams(d) / columns.length)))
   const head = `INSERT INTO ${qualify(d, ref)} (${columns.map((c) => quoteIdent(d, c)).join(', ')}) VALUES `
   const out: Built[] = []
   for (let i = 0; i < rows.length; i += perStmt) {

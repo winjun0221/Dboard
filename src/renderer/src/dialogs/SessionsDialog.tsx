@@ -1,4 +1,6 @@
 // 세션 관리자: 서버에 붙은 연결 목록(사용자·DB·상태·걸린 시간·쿼리), 쿼리 취소·연결 끊기. 대화 상자라 useWs 금지: 접속은 props로
+import { features } from '../../../shared/features'
+import { dialectOf } from '../../../shared/types'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, CircleSlash, LoaderCircle, Plug, RefreshCw, Search, Unplug, X } from 'lucide-react'
@@ -23,7 +25,7 @@ export function SessionsDialog({ conn, onClose }: { conn: ConnectionInfo; onClos
   const [activeOnly, setActiveOnly] = useState(false)
   const [filter, setFilter] = useState('')
   const q = useQuery({ queryKey: ['sessions', conn.id], queryFn: () => api.serverSessions(conn.id), refetchInterval: auto ? 3000 : false, staleTime: 0 })
-  const canCancelQuery = conn.driver !== 'mssql'
+  const canCancelQuery = features(dialectOf(conn.driver)).cancelQuery
 
   const kill = async (x: ServerSession, queryOnly: boolean) => {
     const ok = await ui.confirm({

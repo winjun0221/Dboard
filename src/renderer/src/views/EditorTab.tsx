@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { dialectOf, type DriverKind, type ExplainResult, type StatementResult, type TableRef } from '../../../shared/types'
 import { bindParams, findParams, firstKeyword, isDangerous, isReadOnlyQuery, splitSql, statementAt } from '../../../shared/sql'
+import { defaultPlace, features } from '../../../shared/features'
 import { api, errorText, useCompletion, useDatabases, useSchemas } from '../api'
 import { loadText, saveText, setDirty, useWs, type EditorTab } from '../ws'
 import { useUi } from '../ui'
@@ -45,7 +46,7 @@ interface RunItem {
 
 const DDL_WORDS = new Set(['CREATE', 'DROP', 'ALTER', 'RENAME', 'TRUNCATE', 'COMMENT'])
 const END_WORDS = new Set(['COMMIT', 'ROLLBACK', 'END', 'ABORT'])
-const FORMAT_LANG: Record<DriverKind, 'sqlite' | 'mysql' | 'mariadb' | 'postgresql' | 'transactsql'> = { sqlite: 'sqlite', mysql: 'mysql', mariadb: 'mariadb', postgres: 'postgresql', mssql: 'transactsql' }
+const FORMAT_LANG: Record<DriverKind, 'sqlite' | 'mysql' | 'mariadb' | 'postgresql' | 'transactsql' | 'plsql' | 'clickhouse' | 'duckdb'> = { sqlite: 'sqlite', mysql: 'mysql', mariadb: 'mariadb', postgres: 'postgresql', mssql: 'transactsql', oracle: 'plsql', clickhouse: 'clickhouse', duckdb: 'duckdb' }
 
 /** 수동 커밋을 끄거나 닫을 때: 남은 변경을 커밋할지 롤백할지 */
 function TxEndDialog({ n, onClose, onPick }: { n: number; onClose: () => void; onPick: (commit: boolean) => void }) {
@@ -70,7 +71,9 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
   const [planAsText, setPlanAsText] = useState(false)
   /** 수동 커밋에서 아직 커밋하지 않은 (데이터를 바꾸는) 문장 수 */
   const [pending, setPending] = useState(0)
-  const manual = tab.manual ?? conn?.production === true
+  // ClickHouse는 트랜잭션이 없어서 늘 자동 커밋
+  const canTx = features(dialectOf(conn?.driver ?? 'sqlite')).transactions
+  const manual = canTx && (tab.manual ?? conn?.production === true)
   const [running, setRunning] = useState(false)
   const [started, setStarted] = useState(0)
   const [, tick] = useState(0)
@@ -80,7 +83,8 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
   const driver = conn?.driver ?? 'sqlite'
   const d = dialectOf(driver)
   const dbs = useDatabases(tab.connId, isOn)
-  const wantSchemas = isOn && driver === 'postgres' && !!tab.db
+  const pickSchema = features(d).schemaPicker
+  const wantSchemas = isOn && pickSchema && !!tab.db
   const schemas = useSchemas(tab.connId, tab.db, wantSchemas)
   const completion = useCompletion(tab.connId, tab.db, tab.schema, isOn && (!!tab.db || driver === 'sqlite'))
 
@@ -128,8 +132,9 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
     const keys = Object.keys(completion.data ?? {})
     const hit = keys.find((k) => k === table) ?? keys.find((k) => k.toLowerCase() === table.toLowerCase())
     if (!hit) return null
-    if (parts.length >= 2 && (d === 'postgres' || d === 'mssql') && parts[parts.length - 2].toLowerCase() !== (tab.schema || '').toLowerCase()) return null
-    return { db: tab.db, schema: d === 'postgres' || d === 'mssql' ? tab.schema : '', table: hit }
+    const bySchema = d === 'postgres' || d === 'mssql' || d === 'oracle' || d === 'duckdb'
+    if (parts.length >= 2 && bySchema && parts[parts.length - 2].toLowerCase() !== (tab.schema || '').toLowerCase()) return null
+    return { db: tab.db, schema: bySchema ? tab.schema : '', table: hit }
   }
   const openName = (raw: string): boolean => {
     const ref = resolveName(raw)
@@ -383,8 +388,8 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
     if (!(await settlePending())) return
     setPending(0)
     void api.closeSession(tab.id).catch(() => undefined)
-    const def = c.database || ({ sqlite: 'main', postgres: 'postgres', mssql: 'master', mysql: '', mariadb: '' } as const)[c.driver]
-    ws.updateTab(tab.id, { connId: id, db: def, schema: c.driver === 'postgres' ? 'public' : c.driver === 'mssql' ? 'dbo' : '' })
+    const def = defaultPlace(c)
+    ws.updateTab(tab.id, { connId: id, db: def.db, schema: def.schema })
     void ws.ensureConnected(id)
   }
 
@@ -414,10 +419,12 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
         <button className="tbtn" onClick={formatText} title={t('SQL 줄 맞추기 — 고른 부분 또는 전체 (Ctrl+Shift+F)')}><AlignLeft />{t('정렬')}</button>
         <button className="tbtn" onClick={() => void showPlan()} disabled={running} title={t('실행하지 않고 실행 계획만 보기 (Ctrl+Shift+E)')}><ListTree />{t('실행 계획')}</button>
         <span className="bar-sep" />
-        <button className={`tbtn tx-mode ${manual ? 'manual' : ''}`} onClick={() => void toggleManual()} disabled={running}
-          title={manual ? t('수동 커밋: 커밋을 눌러야 반영돼요. 눌러서 자동 커밋으로') : t('자동 커밋: 문장마다 바로 반영돼요. 눌러서 수동 커밋으로')}>
-          {manual ? <GitCommitHorizontal /> : <CheckCheck />}{manual ? t('수동 커밋') : t('자동 커밋')}
-        </button>
+        {canTx && (
+          <button className={`tbtn tx-mode ${manual ? 'manual' : ''}`} onClick={() => void toggleManual()} disabled={running}
+            title={manual ? t('수동 커밋: 커밋을 눌러야 반영돼요. 눌러서 자동 커밋으로') : t('자동 커밋: 문장마다 바로 반영돼요. 눌러서 수동 커밋으로')}>
+            {manual ? <GitCommitHorizontal /> : <CheckCheck />}{manual ? t('수동 커밋') : t('자동 커밋')}
+          </button>
+        )}
         {manual && (
           <>
             <button className="tbtn commit" onClick={() => void endTx(true)} disabled={running} title={t('바뀐 내용을 DB에 반영')}>
@@ -442,14 +449,14 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
         {driver !== 'sqlite' && (
           <label className="ctx-pick" title={t('DB')}>
             <Database />
-            <select value={tab.db} onChange={(e) => ws.updateTab(tab.id, { db: e.target.value, schema: driver === 'postgres' ? 'public' : tab.schema })} disabled={!isOn}>
+            <select value={tab.db} onChange={(e) => ws.updateTab(tab.id, { db: e.target.value, schema: driver === 'postgres' ? 'public' : driver === 'duckdb' ? 'main' : tab.schema })} disabled={!isOn}>
               {!tab.db && <option value="">{t('(DB 고르기)')}</option>}
               {tab.db && !dbList.includes(tab.db) && <option value={tab.db}>{tab.db}</option>}
               {dbList.map((x) => <option key={x} value={x}>{x}</option>)}
             </select>
           </label>
         )}
-        {driver === 'postgres' && (
+        {pickSchema && (
           <label className="ctx-pick" title={t('스키마')}>
             <FolderTree />
             <select value={tab.schema} onChange={(e) => ws.updateTab(tab.id, { schema: e.target.value })} disabled={!isOn}>

@@ -31,9 +31,52 @@ function node(text: string, d: Dialect): PlanNode {
   return { label: label.trim(), details: [], cost, rows, children: [] }
 }
 
+/** 1.5K·2M 같은 Oracle 숫자 */
+const oraNum = (s: string): number | null => {
+  const m = /^([\d.]+)\s*([KMG])?$/i.exec(s.trim())
+  if (!m) return null
+  return Number(m[1]) * ({ K: 1e3, M: 1e6, G: 1e9 }[(m[2] ?? '').toUpperCase() as 'K'] ?? 1)
+}
+
+/** Oracle DBMS_XPLAN 표: | Id | Operation(들여쓰기 = 깊이) | Name | Rows | … | Cost (%CPU) | + 조건(Predicate Information) */
+function parseOracle(lines: string[]): PlanNode[] {
+  const head = lines.find((l) => /^\|\s*Id\s*\|\s*Operation/i.test(l))
+  if (!head) return []
+  const cols = head.split('|').map((x) => x.trim().toLowerCase())
+  const at = (name: RegExp) => cols.findIndex((c) => name.test(c))
+  const [iOp, iName, iRows, iCost] = [at(/^operation/), at(/^name/), at(/^rows/), at(/^cost/)]
+  const byId = new Map<number, PlanNode>()
+  const roots: PlanNode[] = []
+  const stack: { depth: number; n: PlanNode }[] = []
+  for (const l of lines) {
+    const cells = l.split('|')
+    const id = /^\*?\s*(\d+)\s*$/.exec((cells[1] ?? '').trim().replace(/^\*/, ''))
+    if (!/^\|/.test(l) || !id || cells.length < cols.length) continue
+    const op = cells[iOp] ?? ''
+    const depth = op.length - op.trimStart().length
+    const name = (cells[iName] ?? '').trim()
+    const cost = iCost >= 0 ? oraNum((cells[iCost] ?? '').replace(/\(.*\)/, '')) : null
+    const n: PlanNode = { label: op.trim() + (name ? ' ' + name : ''), details: [], cost, rows: iRows >= 0 ? oraNum(cells[iRows] ?? '') : null, children: [] }
+    byId.set(Number(id[1]), n)
+    while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop()
+    if (stack.length) stack[stack.length - 1].n.children.push(n)
+    else roots.push(n)
+    stack.push({ depth, n })
+  }
+  // "   1 - access("ID"=1)" 줄은 그 단계의 조건으로
+  for (const l of lines) {
+    const p = /^\s*(\d+)\s+-\s+(.+)$/.exec(l)
+    if (p) byId.get(Number(p[1]))?.details.push(p[2].trim())
+  }
+  return roots
+}
+
 /** 계획 글 → 나무 (뿌리 여러 개일 수 있음). 알아볼 수 없으면 빈 배열 */
 export function parsePlan(text: string, d: Dialect): PlanNode[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim())
+  if (d === 'oracle') return parseOracle(lines)
+  // DuckDB는 상자 그림 글이라 그대로 보여 준다
+  if (d === 'duckdb') return []
   const roots: PlanNode[] = []
   const stack: { depth: number; n: PlanNode }[] = []
   const hasMarks = lines.some((l) => MARK.test(l))

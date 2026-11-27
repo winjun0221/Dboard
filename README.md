@@ -1,6 +1,6 @@
 # DBoard
 
-Windows용 DB 관리 도구예요. SQLite · MySQL · MariaDB · PostgreSQL · SQL Server에 붙어서 표를 둘러보고, SQL을 실행하고, 데이터를 고칠 수 있어요.
+Windows용 DB 관리 도구예요. SQLite · MySQL · MariaDB · PostgreSQL · SQL Server · Oracle · ClickHouse · DuckDB에 붙어서 표를 둘러보고, SQL을 실행하고, 데이터를 고칠 수 있어요.
 
 [English](README.en.md)
 
@@ -13,7 +13,7 @@ Windows용 DB 관리 도구예요. SQLite · MySQL · MariaDB · PostgreSQL · S
 - `DBoard-Setup-<버전>.exe` — 설치 파일 (새 버전이 나오면 자동으로 받아 둠)
 - `DBoard-<버전>-portable.exe` — 설치 없이 바로 실행 (자동 업데이트 없음)
 
-Java나 DB 클라이언트를 따로 깔 필요가 없어요. 코드 서명이 아직 없어서 처음 실행할 때 Windows SmartScreen 경고가 나오면 "추가 정보 → 실행"을 눌러 주세요.
+Java나 DB 클라이언트(Oracle Instant Client 등)를 따로 깔 필요가 없어요. DuckDB만 엔진(약 21MB)을 처음 쓸 때 한 번 받아요. 코드 서명이 아직 없어서 처음 실행할 때 Windows SmartScreen 경고가 나오면 "추가 정보 → 실행"을 눌러 주세요.
 
 ## 지원하는 DB
 
@@ -23,6 +23,9 @@ Java나 DB 클라이언트를 따로 깔 필요가 없어요. 코드 서명이 �
 | MySQL · MariaDB | TiDB 등 MySQL 호환 DB |
 | PostgreSQL | CockroachDB · TimescaleDB 등 PostgreSQL 호환 DB |
 | SQL Server | Azure SQL |
+| Oracle | Oracle 12.1 이상 (서비스 이름으로 연결, Instant Client 필요 없음) |
+| ClickHouse | HTTP 포트(8123, HTTPS 8443)로 연결. 트랜잭션·외래 키가 없어서 표 화면에서 행을 고치지는 못해요(가져오기·SQL은 됨) |
+| DuckDB | 파일 하나 (`.duckdb`). 엔진은 처음 연결할 때 받아요(npm 공식 꾸러미, 지문 확인) |
 
 ## 할 수 있는 것
 
@@ -74,7 +77,7 @@ Node.js 24가 필요해요.
 npm install
 npm run dev        # 개발 실행
 npm test           # 테스트
-npm run test:db    # Docker로 MySQL·MariaDB·PostgreSQL·SQL Server를 띄워 실제 서버 테스트
+npm run test:db    # Docker로 MySQL·MariaDB·PostgreSQL·SQL Server·Oracle·ClickHouse를 띄워 실제 서버 테스트
 npm run e2e        # 앱을 띄워 화면 테스트
 npm run dist       # 설치 파일 → release/
 ```

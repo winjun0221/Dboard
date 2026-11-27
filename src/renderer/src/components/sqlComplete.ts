@@ -3,7 +3,7 @@ import { snippetCompletion, type Completion, type CompletionContext, type Comple
 import { syntaxTree } from '@codemirror/language'
 import type { Dialect } from '../../../shared/types'
 import { referencedTables, statementAt } from '../../../shared/sql'
-import { quoteIdent } from '../../../shared/dialect'
+import { quoteIdent, selectTop } from '../../../shared/dialect'
 
 const WORD = /[\p{L}\p{N}_$]+/u
 const VALID = /^[\p{L}\p{N}_$]*$/u
@@ -58,7 +58,7 @@ const TEMPLATES: [string, string][] = [
 ]
 
 export function templateCompletion(d: Dialect) {
-  const list: [string, string][] = [...TEMPLATES, ['top', d === 'mssql' ? 'SELECT TOP 100 * FROM ${table}' : 'SELECT * FROM ${table} LIMIT 100']]
+  const list: [string, string][] = [...TEMPLATES, ['top', selectTop(d, '${table}', 100)]]
   const options = list.map(([label, tpl]) => snippetCompletion(tpl, { label, detail: tpl.replace(/\$\{(?:\d+:)?([^}]*)\}/g, '$1'), type: 'text', boost: 99 }))
   return (ctx: CompletionContext): CompletionResult | null => {
     const w = ctx.matchBefore(/[A-Za-z]+/)

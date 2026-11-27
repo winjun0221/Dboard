@@ -2,10 +2,10 @@
 import type { LangSetting } from './i18n'
 
 /** 접속 종류. mariadb는 mysql 드라이버를 쓰고, MySQL·PostgreSQL 호환 DB(TiDB·CockroachDB 등)도 같은 종류로 붙는다 */
-export type DriverKind = 'sqlite' | 'mysql' | 'mariadb' | 'postgres' | 'mssql'
+export type DriverKind = 'sqlite' | 'mysql' | 'mariadb' | 'postgres' | 'mssql' | 'oracle' | 'clickhouse' | 'duckdb'
 /** SQL 방언 (따옴표·페이지·시스템 표 읽는 방법) */
-export type Dialect = 'sqlite' | 'mysql' | 'postgres' | 'mssql'
-export const DRIVER_KINDS: readonly DriverKind[] = ['sqlite', 'mysql', 'mariadb', 'postgres', 'mssql']
+export type Dialect = 'sqlite' | 'mysql' | 'postgres' | 'mssql' | 'oracle' | 'clickhouse' | 'duckdb'
+export const DRIVER_KINDS: readonly DriverKind[] = ['sqlite', 'mysql', 'mariadb', 'postgres', 'mssql', 'oracle', 'clickhouse', 'duckdb']
 export const dialectOf = (k: DriverKind): Dialect => (k === 'mariadb' ? 'mysql' : k)
 
 /** off: 암호화 안 함 · require: 암호화(인증서 확인 안 함) · verify: 암호화 + 인증서 확인 */
@@ -123,8 +123,20 @@ export interface DbObject {
 }
 
 /** 표·뷰 말고 탐색기에 보여 줄 개체 */
-export type ExtraKind = 'procedure' | 'function' | 'trigger' | 'sequence' | 'event'
-export const EXTRA_KINDS: readonly ExtraKind[] = ['procedure', 'function', 'trigger', 'sequence', 'event']
+export type ExtraKind = 'procedure' | 'function' | 'package' | 'trigger' | 'sequence' | 'event'
+export const EXTRA_KINDS: readonly ExtraKind[] = ['procedure', 'function', 'package', 'trigger', 'sequence', 'event']
+
+/** 처음 쓸 때 받는 DB 엔진(DuckDB) 상태 */
+export interface EngineStatus {
+  installed: boolean
+  version: string
+  /** 받을 크기(바이트, 대략) */
+  size: number
+  /** 받는 중이면 진행 */
+  progress: { done: number; total: number } | null
+  /** 마지막으로 받다가 난 오류 */
+  error: string
+}
 
 export interface ExtraObject {
   kind: ExtraKind
@@ -569,7 +581,11 @@ export interface Api {
   connect(id: string, prompt: SecretsInput | null): Promise<ConnectResult>
   disconnect(id: string): Promise<void>
   connectedIds(): Promise<string[]>
-  pickSqliteFile(mode: 'open' | 'create'): Promise<string | null>
+  /** SQLite·DuckDB 파일 고르기 (create: 새 파일 이름) */
+  pickDbFile(driver: 'sqlite' | 'duckdb', mode: 'open' | 'create'): Promise<string | null>
+  /** 처음 쓸 때 받는 DuckDB 엔진 */
+  engineStatus(): Promise<EngineStatus>
+  installEngine(): Promise<void>
   pickKeyFile(): Promise<string | null>
   forgetHostKey(host: string, port: number): Promise<void>
 
@@ -669,7 +685,7 @@ export interface Api {
 
 export const API_METHODS = [
   'listConnections', 'saveConnection', 'deleteConnection', 'duplicateConnection', 'moveConnection', 'setConnectionFolder', 'exportConnections', 'importConnections', 'testConnection', 'connect',
-  'disconnect', 'connectedIds', 'pickSqliteFile', 'pickKeyFile', 'forgetHostKey',
+  'disconnect', 'connectedIds', 'pickDbFile', 'engineStatus', 'installEngine', 'pickKeyFile', 'forgetHostKey',
   'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion', 'extraObjects', 'objectSource', 'serverSessions', 'killSession', 'erModel', 'saveImage', 'searchNames', 'searchData', 'serverStats', 'users', 'userGrants', 'runUserAction', 'compareSchemas', 'transferData', 'tableDesign', 'runDdl',
   'runSql', 'cancelSql', 'commitTx', 'rollbackTx', 'explain', 'foreignKeys', 'cellValue', 'saveCellValue', 'closeSession', 'history', 'clearHistory',
   'tableData', 'countRows', 'applyChanges',
@@ -682,7 +698,12 @@ export const API_METHODS = [
 type Missing = Exclude<keyof Api, (typeof API_METHODS)[number]>
 export const API_COMPLETE: Missing extends never ? true : Missing = true
 
-export const DEFAULT_PORTS: Record<DriverKind, number> = { sqlite: 0, mysql: 3306, mariadb: 3306, postgres: 5432, mssql: 1433 }
+export const DEFAULT_PORTS: Record<DriverKind, number> = { sqlite: 0, mysql: 3306, mariadb: 3306, postgres: 5432, mssql: 1433, oracle: 1521, clickhouse: 8123, duckdb: 0 }
+
+/** 파일 하나가 DB인 종류 (호스트·포트·비밀번호·SSH 없음) */
+export const isFileDriver = (k: DriverKind): boolean => k === 'sqlite' || k === 'duckdb'
+
+const DEFAULT_USERS: Record<DriverKind, string> = { sqlite: '', duckdb: '', mysql: 'root', mariadb: 'root', postgres: 'postgres', mssql: 'sa', oracle: 'system', clickhouse: 'default' }
 
 export function newConnection(driver: DriverKind = 'postgres'): ConnectionConfig {
   return {
@@ -690,10 +711,10 @@ export function newConnection(driver: DriverKind = 'postgres'): ConnectionConfig
     name: '',
     driver,
     color: '',
-    host: driver === 'sqlite' ? '' : 'localhost',
+    host: isFileDriver(driver) ? '' : 'localhost',
     port: DEFAULT_PORTS[driver],
     database: '',
-    user: driver === 'postgres' ? 'postgres' : driver === 'mssql' ? 'sa' : driver === 'sqlite' ? '' : 'root',
+    user: DEFAULT_USERS[driver],
     file: '',
     savePassword: true,
     ssl: driver === 'mssql' ? 'require' : 'off',

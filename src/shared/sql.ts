@@ -22,19 +22,33 @@ export interface SplitOptions {
 const isIdent = (c: string | undefined) => !!c && /[\p{L}\p{N}_$@#]/u.test(c)
 const isIdentStart = (c: string | undefined) => !!c && /[\p{L}_]/u.test(c)
 
+/** Oracle q'[…]' 문자열의 닫는 짝 */
+const Q_CLOSE: Record<string, string> = { '[': ']', '{': '}', '<': '>', '(': ')' }
+
 /** 같은 길이의 글: 문자열·주석·따옴표 이름은 공백(줄바꿈도 공백으로 — 안의 빈 줄·GO 줄에 속지 않게) */
 export function mask(src: string, d: Dialect): string {
   const out = src.split('')
   const blank = (a: number, b: number) => {
     for (let k = a; k < b && k < out.length; k++) out[k] = ' '
   }
+  const pgLike = d === 'postgres' || d === 'duckdb'
   let i = 0
   const n = src.length
   while (i < n) {
     const c = src[i]
     const c2 = src[i + 1]
+    // Oracle q'X…X' (N q'…'도). 앞이 이름 글자면 아님
+    if (d === 'oracle' && (c === 'q' || c === 'Q') && c2 === "'" && !(isIdent(src[i - 1]) && !/[nN]/.test(src[i - 1] ?? '')) && i + 2 < n) {
+      const open = src[i + 2]
+      const close = Q_CLOSE[open] ?? open
+      const end = src.indexOf(close + "'", i + 3)
+      const j = end < 0 ? n : end + 2
+      blank(i, j)
+      i = j
+      continue
+    }
     // 줄 주석
-    if ((c === '-' && c2 === '-') || (d === 'mysql' && c === '#')) {
+    if ((c === '-' && c2 === '-') || ((d === 'mysql' || d === 'clickhouse') && c === '#')) {
       let j = i
       while (j < n && src[j] !== '\n') j++
       blank(i, j)
@@ -58,8 +72,8 @@ export function mask(src: string, d: Dialect): string {
       i = j
       continue
     }
-    // PostgreSQL $태그$ … $태그$
-    if (d === 'postgres' && c === '$' && !isIdent(src[i - 1])) {
+    // PostgreSQL·DuckDB $태그$ … $태그$
+    if (pgLike && c === '$' && !isIdent(src[i - 1])) {
       const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(src.slice(i, i + 64))
       if (m) {
         const tag = m[0]
@@ -72,12 +86,12 @@ export function mask(src: string, d: Dialect): string {
     }
     // 문자열·따옴표 이름
     const closeOf: Record<string, string> = { "'": "'", '"': '"' }
-    if (d === 'mysql') closeOf['`'] = '`'
+    if (d === 'mysql' || d === 'clickhouse') closeOf['`'] = '`'
     if (d === 'mssql') closeOf['['] = ']'
     if (c in closeOf) {
       const close = closeOf[c]
-      // 백슬래시 이스케이프: MySQL 문자열, PostgreSQL E'…'
-      const backslash = (d === 'mysql' && c !== '`') || (d === 'postgres' && c === "'" && /[eE]/.test(src[i - 1] ?? '') && !isIdent(src[i - 2]))
+      // 백슬래시 이스케이프: MySQL 문자열, ClickHouse 문자열·이름 전부, PostgreSQL·DuckDB E'…'
+      const backslash = (d === 'mysql' && c !== '`') || d === 'clickhouse' || (pgLike && c === "'" && /[eE]/.test(src[i - 1] ?? '') && !isIdent(src[i - 2]))
       let j = i + 1
       while (j < n) {
         if (backslash && src[j] === '\\') {
@@ -106,6 +120,16 @@ export function mask(src: string, d: Dialect): string {
 const TX_WORDS = new Set(['TRANSACTION', 'TRAN', 'WORK', 'DEFERRED', 'IMMEDIATE', 'EXCLUSIVE', 'ISOLATION', 'READ', 'DISTRIBUTED', 'FROM', 'AS', 'IS', 'AND', 'OR'])
 const END_IGNORE = new Set(['IF', 'LOOP', 'WHILE', 'REPEAT'])
 
+/** Oracle PL/SQL 단위 (안의 ;로 나누지 않고, 끝의 ;까지 보내야 한다) */
+const PLSQL_HEAD = /^\s*(?:DECLARE|BEGIN)\b|^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE\s+BODY|LIBRARY)\b/i
+/** PL/SQL 머리(PROCEDURE p … IS)를 여는 낱말 — 그 뒤 첫 AS·IS가 선언부를 연다 */
+const PLSQL_HEADER_WORDS = new Set(['PROCEDURE', 'FUNCTION', 'PACKAGE', 'TRIGGER', 'BODY'])
+
+/** Oracle: PL/SQL 블록·프로시저·함수·패키지·트리거인지 */
+export function isPlsql(sql: string): boolean {
+  return PLSQL_HEAD.test(mask(sql, 'oracle'))
+}
+
 /** 다음 낱말(또는 기호 하나). 없으면 '' */
 function nextToken(m: string, i: number): string {
   const r = /^\s*([\p{L}_][\p{L}\p{N}_]*|[^\s])?/u.exec(m.slice(i, i + 200))
@@ -121,6 +145,10 @@ export function splitSql(src: string, d: Dialect, opts: SplitOptions = {}): Stmt
   let depth = 0
   let block = 0
   let delim = ';'
+  // Oracle PL/SQL: 이 문장이 PL/SQL 단위인지(null = 아직 모름), 머리(PROCEDURE …) 안인지, 선언부(AS·IS·DECLARE)가 BEGIN을 기다리는지
+  let plsql: boolean | null = null
+  let header = false
+  let declPending = false
 
   const push = (a: number, b: number, end: number) => {
     let x = a
@@ -128,6 +156,9 @@ export function splitSql(src: string, d: Dialect, opts: SplitOptions = {}): Stmt
     while (x < y && /\s/.test(src[x])) x++
     while (y > x && /\s/.test(src[y - 1])) y--
     if (m.slice(x, y).trim()) out.push({ from: x, to: y, end: Math.max(end, y), text: src.slice(x, y) })
+    plsql = null
+    header = false
+    declPending = false
   }
   const reset = () => {
     depth = 0
@@ -151,7 +182,7 @@ export function splitSql(src: string, d: Dialect, opts: SplitOptions = {}): Stmt
         reset()
         continue
       }
-      if (d === 'mssql' && /^\s*GO(\s+\d+)?\s*$/i.test(line)) {
+      if ((d === 'mssql' && /^\s*GO(\s+\d+)?\s*$/i.test(line)) || (d === 'oracle' && /^\s*\/\s*$/.test(line))) {
         push(start, i, eol)
         start = eol + 1
         i = eol + 1
@@ -170,6 +201,7 @@ export function splitSql(src: string, d: Dialect, opts: SplitOptions = {}): Stmt
       start = i
       continue
     }
+    if (c === ';') header = false
     if (c === '(') depth++
     else if (c === ')') depth = Math.max(0, depth - 1)
     else if (isIdentStart(c) && !isIdent(m[i - 1])) {
@@ -177,10 +209,33 @@ export function splitSql(src: string, d: Dialect, opts: SplitOptions = {}): Stmt
       // 낱말은 구분자(DELIMITER $$ 등) 앞에서 끊는다: END$$
       while (j < n && isIdent(m[j]) && !(delim !== ';' && m.startsWith(delim, j))) j++
       const w = m.slice(i, j).toUpperCase()
+      if (d === 'oracle' && plsql === null) plsql = PLSQL_HEAD.test(m.slice(i, i + 300))
+      if (plsql) {
+        // PL/SQL: 머리 뒤의 AS·IS와 DECLARE가 블록을 열고, 이어지는 BEGIN은 같은 블록 (END 하나로 닫힌다)
+        if (PLSQL_HEADER_WORDS.has(w)) header = true
+        else if ((w === 'AS' || w === 'IS') && header && depth === 0) {
+          block++
+          header = false
+          declPending = true
+        } else if (w === 'DECLARE') {
+          block++
+          declPending = true
+        } else if (w === 'BEGIN') {
+          if (declPending) declPending = false
+          else block++
+        } else if (w === 'CASE') block++
+        else if (w === 'END') {
+          if (!END_IGNORE.has(nextToken(m, j)) && block > 0) block--
+          declPending = false
+        }
+        i = j
+        continue
+      }
       if (w === 'CASE') block++
       else if (w === 'BEGIN') {
         const next = nextToken(m, j)
-        const isBlock = d === 'postgres' ? next === 'ATOMIC' : !(next === '' || TX_WORDS.has(next) || /^[;,)=.]$/.test(next) || (delim !== ';' && delim.startsWith(next)))
+        const pgLike = d === 'postgres' || d === 'duckdb' || d === 'clickhouse'
+        const isBlock = pgLike ? next === 'ATOMIC' : !(next === '' || TX_WORDS.has(next) || /^[;,)=.]$/.test(next) || (delim !== ';' && delim.startsWith(next)))
         if (isBlock) block++
       } else if (w === 'END') {
         if (!END_IGNORE.has(nextToken(m, j)) && block > 0) block--

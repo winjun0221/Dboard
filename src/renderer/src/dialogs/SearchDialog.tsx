@@ -1,7 +1,7 @@
 // 전체 검색: 이름(표·뷰·열·프로시저 등, 지금 DB 또는 모든 DB)과 데이터(스키마의 표마다 글 열에 그 값이 든 행 수). 대화 상자라 useWs 금지
 import { useState, type ReactNode } from 'react'
-import { Columns3, Database, Eye, FileSearch, ListOrdered, LoaderCircle, Search, Square, SquareFunction, Table2, Workflow, Zap } from 'lucide-react'
-import { literal, quoteIdent } from '../../../shared/dialect'
+import { Columns3, Database, Eye, FileSearch, ListOrdered, LoaderCircle, Package, Search, Square, SquareFunction, Table2, Workflow, Zap } from 'lucide-react'
+import { likeCond, literal, quoteIdent } from '../../../shared/dialect'
 import { dialectOf, type ConnectionInfo, type DataHit, type ObjectKind, type SearchHit, type TableRef } from '../../../shared/types'
 import { api, errorText } from '../api'
 import { useUi } from '../ui'
@@ -9,7 +9,7 @@ import { t } from '../i18n'
 import { fmtNum, randomKey } from '../format'
 import { Check, Dialog } from '../components/Dialog'
 
-const ICON = { table: Table2, view: Eye, column: Columns3, procedure: Workflow, function: SquareFunction, trigger: Zap, sequence: ListOrdered, event: Zap } as const
+const ICON = { table: Table2, view: Eye, column: Columns3, procedure: Workflow, function: SquareFunction, package: Package, trigger: Zap, sequence: ListOrdered, event: Zap } as const
 
 export function SearchDialog({ conn, db, schema, ensureConnected, openTable, openEditor, onClose }: {
   conn: ConnectionInfo
@@ -64,8 +64,9 @@ export function SearchDialog({ conn, db, schema, ensureConnected, openTable, ope
 
   const openData = (h: DataHit) => {
     // 그 값이 든 행만 보이게 조건을 걸어 연다
-    const pat = literal(d, `%${text.trim()}%`)
-    const filter = h.columns.map((c) => (d === 'postgres' ? `${quoteIdent(d, c)}::text ILIKE ${pat}` : `${quoteIdent(d, c)} LIKE ${pat}`)).join(' OR ')
+    // 찾을 때와 같은 모양: %·_·\는 글자 그대로 (ESCAPE '\')
+    const pat = literal(d, '%' + text.trim().replace(/[\\%_]/g, (c) => '\\' + c) + '%')
+    const filter = h.columns.map((c) => likeCond(d, quoteIdent(d, c), pat)).join(' OR ')
     onClose()
     openTable({ db, schema, table: h.table }, 'table', filter)
   }

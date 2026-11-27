@@ -1,6 +1,6 @@
 # DBoard
 
-A database tool for Windows. Connect to SQLite, MySQL, MariaDB, PostgreSQL and SQL Server to browse tables, run SQL and edit data.
+A database tool for Windows. Connect to SQLite, MySQL, MariaDB, PostgreSQL, SQL Server, Oracle, ClickHouse and DuckDB to browse tables, run SQL and edit data.
 
 [한국어](README.md)
 
@@ -13,7 +13,7 @@ Get it from [Releases](https://github.com/winjun0221/dboard/releases/latest).
 - `DBoard-Setup-<version>.exe` — installer (downloads new versions automatically)
 - `DBoard-<version>-portable.exe` — runs without installing (no auto-update)
 
-No Java or database client is needed. The app isn't code-signed yet, so if Windows SmartScreen warns on first launch, choose "More info → Run anyway".
+No Java or database client (such as Oracle Instant Client) is needed. Only DuckDB downloads its engine (about 21 MB) once, on first use. The app isn't code-signed yet, so if Windows SmartScreen warns on first launch, choose "More info → Run anyway".
 
 ## Supported databases
 
@@ -23,6 +23,9 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 | MySQL · MariaDB | MySQL-compatible databases such as TiDB |
 | PostgreSQL | PostgreSQL-compatible databases such as CockroachDB and TimescaleDB |
 | SQL Server | Azure SQL |
+| Oracle | Oracle 12.1 or later (connect by service name, no Instant Client needed) |
+| ClickHouse | over the HTTP port (8123, 8443 for HTTPS). It has no transactions or foreign keys, so rows can't be edited in the table view (import and SQL work) |
+| DuckDB | a single file (`.duckdb`). The engine is downloaded on the first connection (official npm package, checksum verified) |
 
 ## Features
 
@@ -74,7 +77,7 @@ Requires Node.js 24.
 npm install
 npm run dev        # run in development
 npm test           # tests
-npm run test:db    # real-server tests against MySQL, MariaDB, PostgreSQL and SQL Server in Docker
+npm run test:db    # real-server tests against MySQL, MariaDB, PostgreSQL, SQL Server, Oracle and ClickHouse in Docker
 npm run e2e        # UI tests that launch the app
 npm run dist       # installer → release/
 ```

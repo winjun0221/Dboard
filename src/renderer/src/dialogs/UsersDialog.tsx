@@ -65,7 +65,7 @@ export function UsersDialog({ conn, db, schema, onClose }: { conn: ConnectionInf
     else run({ kind: form.kind, name: who, host: h, privileges: privs, db, schema, table: table.trim() }, form.kind === 'grant' ? t('권한 주기') : t('권한 빼기'))
   }
 
-  const target = d === 'mysql' ? db : schema || db
+  const target = d === 'mysql' || d === 'clickhouse' ? db : schema || db
   return (
     <Dialog title={t('사용자·권한 — {name}', { name: conn.name })} icon={Users} width={980} onClose={onClose}>
       <div className="users-body">

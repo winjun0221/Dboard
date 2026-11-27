@@ -5,7 +5,7 @@ import path from 'node:path'
 import { literal, qualify, quoteIdent } from '../shared/dialect'
 import { decodeText, detectEncoding } from '../shared/csv'
 import { t } from '../shared/i18n'
-import { ddlReferences, referencedTables, splitSql } from '../shared/sql'
+import { ddlReferences, isPlsql, referencedTables, splitSql } from '../shared/sql'
 import type { Cell, ColumnInfo, Dialect, DumpObject, DumpOptions, SqlFileResult, TableRef } from '../shared/types'
 import type { DriverModule, Session } from './drivers/base'
 
@@ -41,22 +41,46 @@ interface Item {
 }
 
 function scriptName(d: Dialect, ref: TableRef): string {
-  if (d === 'postgres') return qualify(d, { db: '', schema: ref.schema, table: ref.table })
+  if (d === 'postgres' || d === 'oracle' || d === 'duckdb') return qualify(d, { db: '', schema: ref.schema, table: ref.table })
   if (d === 'mssql') return `${quoteIdent(d, ref.schema || 'dbo')}.${quoteIdent(d, ref.table)}`
   return quoteIdent(d, ref.table)
 }
 
-/** SQL Server datetime은 'YYYY-MM-DD hh:mm:ss'를 언어 설정에 따라 다르게 읽는다 → ISO 8601(T) */
+/** Oracle 글자 상수는 4000바이트까지 → 긴 CLOB 값은 TO_CLOB 조각을 이어 붙인다 */
+function oracleLongText(v: string): string {
+  const parts: string[] = []
+  for (let i = 0; i < v.length; i += 1000) parts.push(`TO_CLOB(${literal('oracle', v.slice(i, i + 1000))})`)
+  return parts.join(' || ')
+}
+
+/**
+ * SQL Server datetime은 'YYYY-MM-DD hh:mm:ss'를 언어 설정에 따라 다르게 읽는다 → ISO 8601(T).
+ * Oracle 날짜는 세션 형식에 기대지 않게 TO_DATE·TO_TIMESTAMP로
+ */
 function cellLiteral(d: Dialect, v: Cell, type: string): string {
   if (d === 'mssql' && typeof v === 'string' && /^(small)?datetime/i.test(type)) return literal(d, v.replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T'))
+  if (d === 'oracle' && typeof v === 'string') {
+    if (/^DATE$/i.test(type)) return `TO_DATE(${literal(d, v)}, 'YYYY-MM-DD HH24:MI:SS')`
+    if (/^TIMESTAMP.*TIME ZONE/i.test(type)) return `TO_TIMESTAMP_TZ(${literal(d, v)}, 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM')`
+    if (/^TIMESTAMP/i.test(type)) return `TO_TIMESTAMP(${literal(d, v)}, 'YYYY-MM-DD HH24:MI:SS.FF')`
+    if (/^N?CLOB$/i.test(type) && v.length > 1000) return oracleLongText(v)
+  }
   return literal(d, v)
 }
 
-/** 끝에 ; 붙이기 (SQL Server는 GO로 나눔) */
+/** 끝에 ; 붙이기 (SQL Server는 GO로 나눔, Oracle PL/SQL은 / 줄로) */
 function statementEnd(d: Dialect, sql: string): string {
   const s = sql.trim()
   if (d === 'mssql') return s + '\nGO\n'
+  if (d === 'oracle' && isPlsql(s)) return (s.endsWith(';') ? s : s + ';') + '\n/\n'
   return (s.endsWith(';') ? s : s + ';') + '\n'
+}
+
+/** Oracle 19c까지는 DROP … IF EXISTS가 없다 → 없으면(ORA-00942) 넘어가는 블록 */
+function dropSql(d: Dialect, word: string, name: string): string {
+  if (d !== 'oracle') return `DROP ${word} IF EXISTS ${name};`
+  const stmt = `DROP ${word} ${name}${word === 'TABLE' ? ' CASCADE CONSTRAINTS' : ''}`
+  return `BEGIN\n  EXECUTE IMMEDIATE '${stmt.replace(/'/g, "''")}';\nEXCEPTION WHEN OTHERS THEN\n  IF SQLCODE != -942 AND SQLCODE != -12003 THEN RAISE; END IF;\nEND;\n/`
 }
 
 /** 디스크가 따라오게 쓰기 (drain 기다림) */
@@ -105,6 +129,8 @@ export async function writeDump(
     let ddl = await mod.ddl(s, ref, obj.kind)
     // MySQL 뷰: 만든 사람(DEFINER)·DB 이름을 빼서 다른 DB·계정에도 넣을 수 있게
     if (d === 'mysql' && obj.kind === 'view') ddl = ddl.replace(/\sDEFINER=`(?:[^`]|``)*`@`(?:[^`]|``)*`/, '').split(quoteIdent(d, db) + '.').join('')
+    // ClickHouse SHOW CREATE는 DB 이름을 붙여 준다 → 빼서 다른 DB에도 넣을 수 있게
+    if (d === 'clickhouse') ddl = ddl.replace(/^(\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|DICTIONARY)\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:`(?:[^`\\]|\\.)+`|[\w$]+)\./i, '$1')
     const cols = obj.kind === 'table' ? await mod.columns(s, ref) : []
     items.push({ obj, ref, name: scriptName(d, ref), ddl, cols })
   }
@@ -133,13 +159,14 @@ export async function writeDump(
     if (d === 'sqlite') await w.write('PRAGMA foreign_keys = OFF;\nBEGIN TRANSACTION;\n\n')
     else if (d === 'mysql') await w.write('SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
     else if (d === 'postgres') await w.write("SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\nBEGIN;\n\n")
-    else await w.write('SET NOCOUNT ON;\nGO\n\n')
+    else if (d === 'duckdb') await w.write('BEGIN TRANSACTION;\n\n')
+    else if (d === 'mssql') await w.write('SET NOCOUNT ON;\nGO\n\n')
 
     // DROP은 다시 만들 때(구조 포함)만 — 데이터만 뽑을 때 표를 지우면 안 된다
     if (o.drop && o.structure) {
       const drops: string[] = []
-      for (const v of [...views].reverse()) drops.push(`DROP ${/^\s*CREATE\s+MATERIALIZED\s+VIEW/i.test(v.ddl) ? 'MATERIALIZED VIEW' : 'VIEW'} IF EXISTS ${v.name};`)
-      for (const x of [...tables].reverse()) drops.push(`DROP TABLE IF EXISTS ${x.name};`)
+      for (const v of [...views].reverse()) drops.push(dropSql(d, /^\s*CREATE\s+MATERIALIZED\s+VIEW/i.test(v.ddl) ? 'MATERIALIZED VIEW' : 'VIEW', v.name))
+      for (const x of [...tables].reverse()) drops.push(dropSql(d, 'TABLE', x.name))
       if (drops.length) await w.write(drops.join('\n') + (d === 'mssql' ? '\nGO\n\n' : '\n\n'))
     }
 
@@ -169,7 +196,7 @@ export async function writeDump(
       for (const v of views) await w.write(`-- ${t('뷰')}: ${v.obj.name}\n` + statementEnd(d, v.ddl) + '\n')
     }
 
-    if (d === 'sqlite' || d === 'postgres') await w.write('COMMIT;\n')
+    if (d === 'sqlite' || d === 'postgres' || d === 'duckdb' || d === 'oracle') await w.write('COMMIT;\n')
     else if (d === 'mysql') await w.write('SET FOREIGN_KEY_CHECKS = 1;\n')
     await w.end()
   } catch (e) {
@@ -188,7 +215,13 @@ async function writeRows(s: Session, d: Dialect, x: Item, o: DumpOptions, write:
   const identity = d === 'mssql' && cols.some((c) => c.autoIncrement)
   const override = d === 'postgres' && /GENERATED\s+ALWAYS\s+AS\s+IDENTITY/i.test(x.ddl) ? ' OVERRIDING SYSTEM VALUE' : ''
   const head = `INSERT INTO ${x.name} (${cols.map((c) => quoteIdent(d, c.name)).join(', ')})${override} VALUES\n`
-  const batch = Math.max(1, Math.min(o.batch, d === 'mssql' ? 1000 : 10_000))
+  // Oracle은 19c까지 여러 행 VALUES가 없어서 한 행씩
+  const batch = d === 'oracle' ? 1 : Math.max(1, Math.min(o.batch, d === 'mssql' ? 1000 : 10_000))
+  // Oracle IDENTITY: ALWAYS면 넣는 동안 BY DEFAULT로, 다 넣고 나서 가장 큰 값 다음부터 (START WITH LIMIT VALUE)
+  const oraIdent = d === 'oracle' ? cols.filter((c) => c.autoIncrement).map((c) => {
+    const m = new RegExp(`${quoteIdent(d, c.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\S+\\s+GENERATED\\s+(ALWAYS|BY\\s+DEFAULT(?:\\s+ON\\s+NULL)?)\\s+AS\\s+IDENTITY`, 'i').exec(x.ddl)
+    return { col: quoteIdent(d, c.name), gen: (m?.[1] ?? 'BY DEFAULT').replace(/\s+/g, ' ').toUpperCase() }
+  }) : []
   let buf: string[] = []
   let size = 0
   let statements = 0
@@ -198,6 +231,7 @@ async function writeRows(s: Session, d: Dialect, x: Item, o: DumpOptions, write:
     started = true
     await write(`-- ${t('데이터')}: ${x.obj.name}\n`)
     if (identity) await write(`SET IDENTITY_INSERT ${x.name} ON;\n`)
+    for (const i of oraIdent) if (i.gen === 'ALWAYS') await write(`ALTER TABLE ${x.name} MODIFY (${i.col} GENERATED BY DEFAULT AS IDENTITY);\n`)
   }
   const flush = async () => {
     if (!buf.length) return
@@ -219,6 +253,7 @@ async function writeRows(s: Session, d: Dialect, x: Item, o: DumpOptions, write:
   })
   await flush()
   if (identity && started) await write(`SET IDENTITY_INSERT ${x.name} OFF;\n`)
+  if (started) for (const i of oraIdent) await write(`ALTER TABLE ${x.name} MODIFY (${i.col} GENERATED ${i.gen} AS IDENTITY (START WITH LIMIT VALUE));\n`)
   // PostgreSQL: 넣은 번호 다음부터 이어지게 시퀀스를 맞춘다
   if (d === 'postgres') {
     for (const c of cols.filter((col) => col.autoIncrement)) {
@@ -254,8 +289,9 @@ export async function runSqlFile(s: Session, d: Dialect, file: string): Promise<
 /** 구조를 바꾸는 문장들을 차례로 (표 설계·이름 바꾸기·지우기). 오류가 나면 되돌리기를 시도하고 몇 번째 문장인지 알린다 */
 export async function runStatements(s: Session, d: Dialect, list: string[]): Promise<void> {
   // 다른 연결이 표를 잡고 있으면 한없이 기다리지 않게
-  const wait = { postgres: "SET lock_timeout = '15s'", mysql: 'SET SESSION lock_wait_timeout = 15', mssql: 'SET LOCK_TIMEOUT 15000', sqlite: '' }[d]
-  if (wait) await s.exec(wait).catch(() => undefined)
+  const wait: Partial<Record<Dialect, string>> = { postgres: "SET lock_timeout = '15s'", mysql: 'SET SESSION lock_wait_timeout = 15', mssql: 'SET LOCK_TIMEOUT 15000', oracle: 'ALTER SESSION SET DDL_LOCK_TIMEOUT = 15', duckdb: '' }
+  const waitSql = wait[d]
+  if (waitSql) await s.exec(waitSql).catch(() => undefined)
   for (let i = 0; i < list.length; i++) {
     try {
       await s.run(list[i], 1)

@@ -16,7 +16,7 @@ export async function erModel(mod: DriverModule, s: Session, db: string, schema:
     model.tables.push({ name: obj.name, comment: obj.comment, columns: cols.map((c) => ({ name: c.name, type: c.type, pk: c.pk, nullable: c.nullable })) })
     for (const fk of await mod.foreignKeys(s, ref)) {
       // 같은 스키마(DB) 안의 표를 가리키는 것만 선으로
-      const sameSchema = mod.dialect === 'mysql' ? fk.ref.db === db : mod.dialect === 'sqlite' ? true : fk.ref.schema === schema
+      const sameSchema = mod.dialect === 'mysql' || mod.dialect === 'clickhouse' ? fk.ref.db === db : mod.dialect === 'sqlite' ? true : fk.ref.schema === schema
       if (!sameSchema || !names.has(fk.ref.table)) continue
       model.links.push({ name: fk.name, from: obj.name, fromColumns: fk.columns, to: fk.ref.table, toColumns: fk.refColumns })
     }

@@ -12,7 +12,6 @@
   "이름": "Name",
   "색": "Color",
   "색 없음": "No color",
-  "SQLite 파일": "SQLite file",
   "파일이 없으면 \"새 파일\"로 만드세요.": "If the file doesn't exist yet, create it with \"New file\".",
   "찾아보기": "Browse",
   "새 파일": "New file",

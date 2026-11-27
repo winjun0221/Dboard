@@ -1,13 +1,15 @@
 // Electron 메인 프로세스: 창, 화면과 주고받는 기능(IPC), 앱 설정, 파일 고르기·저장 창
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, safeStorage, shell, type IpcMainInvokeEvent } from 'electron'
+import { configureEngines, engineStatus, installDuckdb } from './engines'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { resolveLang, setLang, t } from '../shared/i18n'
+import { features } from '../shared/features'
 import { isReadOnlyQuery } from '../shared/sql'
 import { decodeText, detectEncoding } from '../shared/csv'
-import { API_METHODS, dialectOf, EXTRA_KINDS, type Api, type AppSettings, type ScriptEntry, type SqlFile, type ConnectionConfig, type SecretName, type SecretsInput } from '../shared/types'
+import { API_METHODS, dialectOf, EXTRA_KINDS, isFileDriver, type Api, type AppSettings, type ScriptEntry, type SqlFile, type ConnectionConfig, type SecretName, type SecretsInput } from '../shared/types'
 import { Manager, type Resolved } from './conn'
 import { setSqliteWorkerCode } from './drivers/sqlite'
 import {
@@ -145,10 +147,10 @@ function resolve(config: ConnectionConfig, saved: Partial<Record<SecretName, str
     if (strict) need.push(k)
     return ''
   }
-  const ssh = config.ssh.enabled && config.driver !== 'sqlite'
+  const ssh = config.ssh.enabled && !isFileDriver(config.driver)
   const r: Resolved = {
     config,
-    password: pick('password', config.driver !== 'sqlite'),
+    password: pick('password', !isFileDriver(config.driver)),
     sshPassword: pick('sshPassword', ssh && config.ssh.auth === 'password'),
     // 키 파일에 암호가 걸려 있을 때만 묻는다
     sshPassphrase: ssh && config.ssh.auth === 'key' && (prompt.sshPassphrase !== undefined || saved.sshPassphrase !== undefined || keyNeedsPassphrase(config.ssh.keyFile)) ? pick('sshPassphrase', true) : '',
@@ -342,18 +344,26 @@ const handlers: Handlers = {
   },
   disconnect: async (id) => manager.disconnect(checkConnId(id)),
   connectedIds: async () => manager.connectedIds(),
-  pickSqliteFile: async (mode) => {
+  pickDbFile: async (driver, mode) => {
+    const kind = checkOneOf(driver, ['sqlite', 'duckdb'] as const)
     const m = checkOneOf(mode, ['open', 'create'] as const)
-    const filters = [{ name: t('SQLite DB'), extensions: ['db', 'sqlite', 'sqlite3', 'db3'] }, { name: t('모든 파일'), extensions: ['*'] }]
+    const duck = kind === 'duckdb'
+    const filters = [
+      duck ? { name: t('DuckDB DB'), extensions: ['duckdb', 'ddb', 'db'] } : { name: t('SQLite DB'), extensions: ['db', 'sqlite', 'sqlite3', 'db3'] },
+      { name: t('모든 파일'), extensions: ['*'] },
+    ]
     if (m === 'open') {
-      const r = await dialog.showOpenDialog(win!, { title: t('SQLite 파일 열기'), properties: ['openFile'], filters })
+      const r = await dialog.showOpenDialog(win!, { title: duck ? t('DuckDB 파일 열기') : t('SQLite 파일 열기'), properties: ['openFile'], filters })
       return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
     }
-    const r = await dialog.showSaveDialog(win!, { title: t('새 SQLite 파일 만들기'), defaultPath: path.join(app.getPath('documents'), 'new.db'), filters })
+    const r = await dialog.showSaveDialog(win!, { title: duck ? t('새 DuckDB 파일 만들기') : t('새 SQLite 파일 만들기'), defaultPath: path.join(app.getPath('documents'), duck ? 'new.duckdb' : 'new.db'), filters })
     if (r.canceled || !r.filePath) return null
-    if (!fs.existsSync(r.filePath)) new DatabaseSync(r.filePath).close()
+    // DuckDB는 처음 연결할 때 만든다 (빈 파일은 DuckDB 파일이 아니라서 미리 만들지 않음)
+    if (!duck && !fs.existsSync(r.filePath)) new DatabaseSync(r.filePath).close()
     return r.filePath
   },
+  engineStatus: async () => engineStatus(),
+  installEngine: async () => installDuckdb((url) => net.fetch(url)),
   pickKeyFile: async () => {
     const dir = path.join(os.homedir(), '.ssh')
     const r = await dialog.showOpenDialog(win!, { title: t('SSH 개인 키 고르기'), defaultPath: fs.existsSync(dir) ? dir : os.homedir(), properties: ['openFile', 'showHiddenFiles'] })
@@ -585,7 +595,7 @@ const handlers: Handlers = {
     // 읽기 전용: 바꾸는 문장은 실행하지 않는다 (SQL Server는 서버 설정이 없어서 여기서만 막힘)
     if (live.config.readOnly === true && !isReadOnlyQuery(text, live.mod.dialect)) throw new Error(t('읽기 전용 접속이라 데이터나 구조를 바꾸는 문장은 실행할 수 없어요'))
     const s = await manager.editorSession(cid, checkTabKey(tabKey), d, checkName(schema))
-    await s.setManualCommit(checkBool(manual ?? false))
+    await s.setManualCommit(checkBool(manual ?? false) && features(live.mod.dialect).transactions)
     const t0 = performance.now()
     const base = { at: Date.now(), connId: cid, connName: live.config.name, db: d || live.defaultDb, sql: text }
     try {
@@ -612,8 +622,9 @@ const handlers: Handlers = {
   },
   explain: async (id, tabKey, db, schema, sql, manual) => {
     const cid = checkConnId(id)
+    const live = manager.get(cid)
     const s = await manager.editorSession(cid, checkTabKey(tabKey), checkName(db), checkName(schema))
-    await s.setManualCommit(checkBool(manual ?? false))
+    await s.setManualCommit(checkBool(manual ?? false) && features(live.mod.dialect).transactions)
     return explain(s, checkSql(sql))
   },
   foreignKeys: async (id, ref) => {
@@ -646,7 +657,9 @@ const handlers: Handlers = {
   applyChanges: async (id, ref, changes) => {
     const cid = checkConnId(id)
     checkWritable(cid, t('데이터를 고칠'))
-    return ops.applyChanges(manager.get(cid), checkRef(ref), checkChanges(changes))
+    const live = manager.get(cid)
+    if (!features(live.mod.dialect).editRows) throw new Error(t('이 DB는 표 화면에서 행을 고칠 수 없어요. SQL 편집기에서 고쳐 주세요.'))
+    return ops.applyChanges(live, checkRef(ref), checkChanges(changes))
   },
 
   // CSV
@@ -890,6 +903,11 @@ app.whenReady().then(() => {
   setLang(resolveLang(s.language, app.getLocale()))
   applyTheme(s)
   zoomSetting = s.zoom
+  // DuckDB 엔진은 앱 데이터 폴더에 받아 둔다 (시험(e2e)에서만 받을 곳을 바꿀 수 있다)
+  configureEngines({
+    dir: path.join(app.getPath('userData'), 'engines'),
+    ...(E2E && process.env.DBOARD_DUCKDB_URL && process.env.DBOARD_DUCKDB_SHA512 ? { source: { url: process.env.DBOARD_DUCKDB_URL, integrity: process.env.DBOARD_DUCKDB_SHA512 } } : {}),
+  })
   // SQLite는 작업 스레드에서 (오래 걸리는 쿼리가 창을 멈추지 않게)
   try {
     setSqliteWorkerCode(fs.readFileSync(path.join(__dirname, 'sqlite-worker.cjs'), 'utf8'))

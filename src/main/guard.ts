@@ -4,8 +4,7 @@ import path from 'node:path'
 import { t } from '../shared/i18n'
 import {
   CSV_DELIMITERS, DRIVER_KINDS, EXPORT_FORMATS, type Cell, type ConnectionConfig, type CsvReadOptions, type CsvWriteOptions, type DataQuery, type ImportOptions,
-  type DumpObject, type DumpOptions, type RowChange, type SecretsInput, type SortKey, type TableRef, type UserAction,
-} from '../shared/types'
+  type DumpObject, type DumpOptions, type RowChange, type SecretsInput, type SortKey, type TableRef, type UserAction, isFileDriver } from '../shared/types'
 
 export function checkDumpOptions(v: unknown): DumpOptions {
   const o = checkObject(v)
@@ -195,7 +194,7 @@ export function checkConfig(v: unknown): ConnectionConfig {
   const driver = checkOneOf(o.driver, DRIVER_KINDS)
   const name = checkText(o.name ?? '', 200).trim()
   const file = checkText(o.file ?? '', 4096).trim()
-  if (driver === 'sqlite' && file && !path.isAbsolute(file)) throw new Error(t('SQLite 파일은 전체 경로로 적어 주세요'))
+  if (isFileDriver(driver) && file && !path.isAbsolute(file)) throw new Error(t('DB 파일은 전체 경로로 적어 주세요'))
   const keyFile = checkText(ssh.keyFile ?? '', 4096).trim()
   const port = (x: unknown, d: number) => (typeof x === 'number' && Number.isInteger(x) && x > 0 && x < 65536 ? x : d)
   const color = checkText(o.color ?? '', 7)
@@ -228,12 +227,13 @@ export function checkConfig(v: unknown): ConnectionConfig {
 
 /** 연결해도 되는 모양인지 (저장은 덜 채워도 되지만 연결·시험에는 필요) */
 export function validateForConnect(c: ConnectionConfig) {
-  if (c.driver === 'sqlite') {
-    if (!c.file) throw new Error(t('SQLite 파일을 골라 주세요'))
+  if (isFileDriver(c.driver)) {
+    if (!c.file) throw new Error(t('DB 파일을 골라 주세요'))
     return
   }
   if (!c.host) throw new Error(t('호스트를 적어 주세요'))
   if (!c.port) throw new Error(t('포트를 적어 주세요'))
+  if (c.driver === 'oracle' && !c.database.trim()) throw new Error(t('Oracle 서비스 이름을 적어 주세요 (예: ORCLPDB1)'))
   if (c.ssh.enabled) {
     if (!c.ssh.host || !c.ssh.user) throw new Error(t('SSH 호스트와 사용자를 적어 주세요'))
     if (c.ssh.auth === 'key' && !c.ssh.keyFile) throw new Error(t('SSH 개인 키 파일을 골라 주세요'))

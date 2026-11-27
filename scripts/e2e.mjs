@@ -5,12 +5,14 @@
 // 사용: npm run e2e  (스크린샷: E2E_OUT 폴더, 기본은 임시 폴더)
 import { _electron as electron } from 'playwright-core'
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import iconv from 'iconv-lite'
-import { strToU8, zipSync } from 'fflate'
+import { gzipSync, strToU8, zipSync } from 'fflate'
 import { makeSampleDb } from './sample-db.mjs'
 
 const out = path.resolve(process.env.E2E_OUT || path.join(os.tmpdir(), 'dboard-e2e'))
@@ -47,8 +49,35 @@ const sql = (q, ...p) => {
   }
 }
 
+// DuckDB 엔진 받기 시험: node_modules의 같은 파일로 꾸러미(.tgz)를 만들어 이 PC에서만 내준다 (인터넷 없이)
+const duckPkg = path.resolve('node_modules/@duckdb/node-bindings-win32-x64')
+const duckVersion = JSON.parse(fs.readFileSync(path.join(duckPkg, 'package.json'), 'utf8')).version
+const duckTgz = (() => {
+  const parts = []
+  for (const name of ['duckdb.node', 'duckdb.dll', 'LICENSE']) {
+    const data = fs.readFileSync(path.join(duckPkg, name))
+    const h = Buffer.alloc(512)
+    h.write('package/' + name, 0)
+    h.write(data.length.toString(8).padStart(11, '0') + '\0', 124)
+    h.write('0', 156)
+    h.write('ustar\0', 257)
+    parts.push(h, data, Buffer.alloc((512 - (data.length % 512)) % 512))
+  }
+  parts.push(Buffer.alloc(1024))
+  return Buffer.from(gzipSync(Buffer.concat(parts), { level: 1 }))
+})()
+const duckServer = http.createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': duckTgz.length })
+  res.end(duckTgz)
+})
+await new Promise((ok) => duckServer.listen(0, '127.0.0.1', ok))
+
 const electronPath = (await import('electron')).default
-const env = { ...process.env, DBOARD_USER_DATA: userData, DBOARD_E2E: '1' }
+const env = {
+  ...process.env, DBOARD_USER_DATA: userData, DBOARD_E2E: '1',
+  DBOARD_DUCKDB_URL: `http://127.0.0.1:${duckServer.address().port}/duckdb.tgz`,
+  DBOARD_DUCKDB_SHA512: 'sha512-' + crypto.createHash('sha512').update(duckTgz).digest('base64'),
+}
 const app = await electron.launch({ executablePath: electronPath, args: ['.'], env })
 /** 스크린샷 (문서에 쓸 수 있게 알림은 닫고 찍는다) */
 const shot = async (win, name) => {
@@ -833,6 +862,51 @@ try {
     await win.keyboard.press('Escape')
   }
 
+  // ── DuckDB: 처음 연결할 때 엔진 받기(지문 확인) → 표 만들기 → 데이터 고치기 ──
+  await win.locator('.side-tools button[title="새 연결"]').click()
+  await win.locator('.driver-card', { hasText: 'DuckDB' }).click()
+  const duckFile = path.join(out, 'e2e.duckdb')
+  await win.locator('.dialog input.mono').fill(duckFile)
+  await win.locator('.dialog .field', { hasText: '이름' }).locator('input').fill('duck')
+  check('duckdb: asks to download the engine first', await until(async () => (await win.locator('.dialog .engine-note button', { hasText: '엔진 받기' }).count()) === 1))
+  await win.locator('.dialog button', { hasText: '연결 시험' }).click()
+  await win.waitForSelector('.dialog h2:has-text("DuckDB 엔진 받기")')
+  await shot(win, '22-duckdb-engine.png')
+  await win.locator('.dialog button[type=submit]', { hasText: '내려받기' }).click()
+  check('duckdb: engine downloaded and verified', await until(() => fs.existsSync(path.join(userData, 'engines', `duckdb-${duckVersion}-win32-x64`, 'duckdb.node')), 60000))
+  check('duckdb: connection test after download', await until(async () => (await win.locator('.test-ok').count()) > 0, 30000), await win.locator('.test-ok, .test-fail').first().innerText().catch(() => ''))
+  check('duckdb: engine shown as ready', await until(async () => (await win.locator('.dialog .engine-note', { hasText: '준비됨' }).count()) === 1))
+  await submit()
+  const duckRow = win.locator('.tree-row.conn-row', { hasText: 'duck' })
+  await duckRow.click()
+  check('duckdb: tree database', await until(async () => (await win.locator('.tree-row[data-key^="d:"]', { hasText: 'e2e' }).count()) > 0, 20000))
+  await menu(duckRow, '새 SQL 편집기')
+  await win.waitForSelector('.tab-pane:visible .cm-content')
+  const duckEd = win.locator('.tab-pane:visible')
+  check('duckdb: editor picks db and schema', (await duckEd.locator('.ctx-pick select').nth(1).inputValue()) === 'e2e' && (await duckEd.locator('.ctx-pick select').nth(2).inputValue()) === 'main')
+  await duckEd.locator('.cm-content').click()
+  await win.keyboard.insertText("CREATE TABLE fruit (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, price DECIMAL(8,2));\nINSERT INTO fruit VALUES (1, '사과', 1.5), (2, '배', 2);\nSELECT * FROM fruit ORDER BY id;")
+  await win.keyboard.press('Alt+x')
+  check('duckdb: script runs', await until(async () => (await duckEd.locator('.result-view .g-row').count()) === 2, 20000), await duckEd.locator('.log-error').first().innerText().catch(() => ''))
+  await shot(win, '23-duckdb-editor.png')
+  await win.keyboard.press('Control+w')
+  const duckKey = (k) => `.tree-row[data-key^="${k}"]`
+  await win.locator(duckKey('d:'), { hasText: 'e2e' }).click()
+  await win.locator(duckKey('s:'), { hasText: 'main' }).last().click()
+  await win.locator('.tree-row[data-key*=":e2e:main:table"]').click()
+  await win.locator('.tree-row[data-key^="t:"][data-key$=":e2e:main:fruit"]').dblclick()
+  const fruit = win.locator('.tab-pane:visible .data-view')
+  await fruit.locator('.g-row').first().waitFor()
+  await fruit.locator('.g-row').nth(1).locator('.g-cell').nth(1).dblclick()
+  await win.locator('.g-editor').fill('배2')
+  await win.locator('.g-editor').press('Enter')
+  await fruit.locator('button', { hasText: '저장 (1)' }).click()
+  await win.waitForSelector('.preview-sql .cm-content')
+  check('duckdb: save preview uses $ placeholders inlined', (await win.locator('.preview-sql .cm-content').innerText()).includes(`UPDATE "e2e"."main"."fruit" SET "name" = '배2' WHERE "id" = 2`))
+  await submit()
+  check('duckdb: saved', await until(async () => (await fruit.locator('.g-row').nth(1).locator('.g-cell').nth(1).innerText()) === '배2'))
+  await win.keyboard.press('Control+w')
+
   // ── 운영 DB · 읽기 전용 접속 ──
   const shopRow = win.locator('.tree-row.conn-row', { hasText: 'shop' })
   const editShop = async (label, on) => {
@@ -910,15 +984,17 @@ async function servers(win, submit) {
     { kind: 'MariaDB', name: 'maria', host: '127.0.0.1', port: '33062', user: 'root', pw: 'dboard_test', db: 'dboard_test' },
     { kind: 'PostgreSQL', name: 'pg17', host: '127.0.0.1', port: '54321', user: 'postgres', pw: 'dboard_test', db: 'dboard_test' },
     { kind: 'SQL Server', name: 'mssql', host: '127.0.0.1', port: '14331', user: 'sa', pw: 'Dboard_test1!', db: 'master' },
+    { kind: 'Oracle', name: 'ora', host: '127.0.0.1', port: '15211', user: 'system', pw: 'dboard_test', db: 'FREEPDB1', dbLabel: '서비스 이름' },
+    { kind: 'ClickHouse', name: 'chouse', host: '127.0.0.1', port: '18123', user: 'dboard', pw: 'dboard_test', db: 'dboard_test' },
   ]
   for (const c of conns) {
     await win.locator('.side-tools button[title="새 연결"]').click()
     await win.locator('.driver-card', { hasText: c.kind }).click()
     const dlg = win.locator('.dialog')
-    await dlg.locator('.field', { hasText: '이름' }).locator('input').fill(c.name)
+    await dlg.locator('.field', { hasText: /^이름/ }).locator('input').fill(c.name)
     await dlg.locator('.field', { hasText: '호스트' }).locator('input').fill(c.host)
     await dlg.locator('.field', { hasText: '포트' }).locator('input').fill(c.port)
-    await dlg.locator('.field', { hasText: /^DB/ }).locator('input').fill(c.db)
+    await dlg.locator('.field', { hasText: c.dbLabel ?? /^DB/ }).locator('input').fill(c.db)
     await dlg.locator('.field', { hasText: '사용자' }).locator('input').fill(c.user)
     await dlg.locator('input[type=password]').fill(c.pw)
     await dlg.locator('button', { hasText: '연결 시험' }).click()
@@ -936,6 +1012,10 @@ async function servers(win, submit) {
     const tbl = 'e2e_' + c.name.replace(/\W/g, '')
     const ddl = c.kind === 'SQL Server'
       ? `IF OBJECT_ID('${tbl}') IS NOT NULL DROP TABLE ${tbl};\nGO\nCREATE TABLE ${tbl} (id INT IDENTITY PRIMARY KEY, name NVARCHAR(50));\nGO\nINSERT INTO ${tbl} (name) VALUES (N'가'), (N'나');`
+      : c.kind === 'Oracle'
+        ? `BEGIN\n  EXECUTE IMMEDIATE 'DROP TABLE ${tbl}';\nEXCEPTION WHEN OTHERS THEN NULL;\nEND;\n/\nCREATE TABLE ${tbl} (id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, name VARCHAR2(50));\nINSERT INTO ${tbl} (name) VALUES ('가');\nINSERT INTO ${tbl} (name) VALUES ('나');`
+      : c.kind === 'ClickHouse'
+        ? `DROP TABLE IF EXISTS ${tbl};\nCREATE TABLE ${tbl} (id UInt32, name String) ENGINE = MergeTree ORDER BY id;\nINSERT INTO ${tbl} VALUES (1, '가'), (2, '나');`
       : c.kind === 'PostgreSQL'
         ? `DROP TABLE IF EXISTS ${tbl};\nCREATE TABLE ${tbl} (id SERIAL PRIMARY KEY, name VARCHAR(50));\nINSERT INTO ${tbl} (name) VALUES ('가'), ('나');`
         : `DROP TABLE IF EXISTS ${tbl};\nCREATE TABLE ${tbl} (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(50));\nINSERT INTO ${tbl} (name) VALUES ('가'), ('나');`
@@ -944,14 +1024,32 @@ async function servers(win, submit) {
     await win.keyboard.press('Alt+x')
     check(`[${c.kind}] script runs`, await until(async () => (await ed.locator('.result-view .g-row').count()) === 2, 20000), await ed.locator('.log-error').first().innerText().catch(() => ''))
     await shot(win, `20-${c.name}-editor.png`)
+    if (c.kind === 'ClickHouse') check('[ClickHouse] no manual commit button', (await ed.locator('.tbtn.tx-mode').count()) === 0)
     await win.keyboard.press('Control+w')
   }
+  // Oracle: 세션 관리자·사용자 창, ClickHouse: 표 데이터는 읽기 전용
+  const oraRow = win.locator('.tree-row.conn-row', { hasText: 'ora' }).first()
+  await menu2(win, oraRow, '세션 관리자…')
+  check('[Oracle] sessions listed', await until(async () => (await win.locator('.dialog table.info-table tbody tr').count()) >= 1, 15000))
+  await win.keyboard.press('Escape')
+  await menu2(win, oraRow, '사용자·권한…')
+  check('[Oracle] users listed', await until(async () => (await win.locator('.dialog .users-list .compare-row', { hasText: 'SYSTEM' }).count()) === 1, 15000))
+  await win.keyboard.press('Escape')
+  const chDb = win.locator('.tree-row[data-key^="d:"]', { hasText: 'dboard_test' }).last()
+  await chDb.click()
+  await win.locator('.tree-row[data-key$=":dboard_test::table"]').last().click()
+  await win.locator('.tree-row[data-key^="t:"][data-key$=":e2e_chouse"]').dblclick()
+  const chData = win.locator('.tab-pane:visible .data-view')
+  await chData.locator('.g-row').first().waitFor({ timeout: 15000 }).catch(() => {})
+  check('[ClickHouse] table data is read-only but importable', (await chData.locator('.chip', { hasText: '직접 고칠 수 없어요' }).count()) === 1 && (await chData.locator('button', { hasText: '가져오기' }).count()) === 1 && (await chData.locator('.g-row').count()) === 2)
+  await shot(win, '24-clickhouse-data.png')
+  await win.keyboard.press('Control+w')
 
   // SSH 터널: 시험 SSH 서버(127.0.0.1:22221)를 거쳐, 그 서버에서 본 주소 postgres:5432로
   await win.locator('.side-tools button[title="새 연결"]').click()
   await win.locator('.driver-card', { hasText: 'PostgreSQL' }).click()
   const dlg = win.locator('.dialog')
-  await dlg.locator('.field', { hasText: '이름' }).locator('input').fill('pg-ssh')
+  await dlg.locator('.field', { hasText: /^이름/ }).locator('input').fill('pg-ssh')
   await dlg.locator('.field', { hasText: '호스트' }).locator('input').fill('postgres')
   await dlg.locator('.field', { hasText: '포트' }).locator('input').fill('5432')
   await dlg.locator('.field', { hasText: /^DB/ }).locator('input').fill('dboard_test')
@@ -980,6 +1078,7 @@ async function menu2(win, target, item) {
   await win.locator('.ctx-menu .menu-item', { hasText: item }).first().click()
 }
 
+duckServer.close()
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed → ${out}`)
 process.exit(failed.length ? 1 : 0)

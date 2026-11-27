@@ -1,10 +1,11 @@
 // 왼쪽 탐색기: 접속 → DB → (스키마) → 표·뷰 묶음 → 표 → 열·인덱스. 펼칠 때 읽고, 새로고침 전까지 기억
 import { useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import {
-  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eraser, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, PencilRuler, PenLine, Plug, Plus, RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download, Workflow, SquareFunction, Zap, ListOrdered, CalendarClock, Activity, FolderInput, FolderMinus, Network, GitCompareArrows, ArrowRightLeft, FileSearch, Gauge, Users,
-} from 'lucide-react'
+  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eraser, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, PencilRuler, PenLine, Plug, Plus, RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download, Workflow, SquareFunction, Zap, ListOrdered, CalendarClock, Activity, FolderInput, FolderMinus, Network, GitCompareArrows, ArrowRightLeft, FileSearch, Gauge, Users, Package } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { dropExtraSql, objectSql, type ObjectAction } from '../../../shared/alter'
+import { quoteIdent, selectTop } from '../../../shared/dialect'
+import { features } from '../../../shared/features'
 import { dialectOf, EXTRA_KINDS, type ConnectionInfo, type DbObject, type ExtraKind, type ExtraObject, type ObjectKind, type TableRef } from '../../../shared/types'
 import { api, errorText, useColumns, useDatabases, useExtras, useIndexes, useObjects, useRefreshConn, useSchemas } from '../api'
 import { defaultContext, useWs } from '../ws'
@@ -112,8 +113,8 @@ const EXPAND_KEY = 'dboard.tree.expanded'
 /** 들여쓰기: 줄 깊이 + 접속 폴더 안이면 한 칸 더 (--tree-indent) */
 const pad = (px: number): CSSProperties => ({ paddingLeft: `calc(${px}px + var(--tree-indent, 0px))` })
 
-const EXTRA_LABEL: Record<ExtraKind, string> = { procedure: tk('프로시저'), function: tk('함수'), trigger: tk('트리거'), sequence: tk('시퀀스'), event: tk('이벤트') }
-const EXTRA_ICON = { procedure: Workflow, function: SquareFunction, trigger: Zap, sequence: ListOrdered, event: CalendarClock }
+const EXTRA_LABEL: Record<ExtraKind, string> = { procedure: tk('프로시저'), function: tk('함수'), package: tk('패키지'), trigger: tk('트리거'), sequence: tk('시퀀스'), event: tk('이벤트') }
+const EXTRA_ICON = { procedure: Workflow, function: SquareFunction, package: Package, trigger: Zap, sequence: ListOrdered, event: CalendarClock }
 
 function loadExpanded(): Set<string> {
   try {
@@ -406,14 +407,15 @@ function ConnNode({ c, folders, ctx }: { c: ConnectionInfo; folders: string[]; c
     }
   }
 
+  const server = features(dialectOf(c.driver)).server
   const menu = (e: MouseEvent) => ui.menu(e, [
     isOn ? { label: t('연결 끊기'), icon: Unplug, onClick: () => void ws.disconnect(c.id) } : { label: t('연결'), icon: Plug, onClick: () => { ctx.toggle(k, true); void connect() } },
     { label: t('새 SQL 편집기'), icon: SquareTerminal, hint: 'Ctrl+]', onClick: async () => { if (await ws.ensureConnected(c.id)) ws.openEditor(c.id) } },
     isOn && { label: t('새로고침'), icon: RefreshCw, onClick: () => refresh(c.id) },
     { label: t('전체 검색…'), icon: FileSearch, onClick: () => { const def = defaultContext(c); tools.search(c, def.db, def.schema) } },
-    c.driver !== 'sqlite' && { label: t('서버 상태…'), icon: Gauge, onClick: () => void tools.stats(c) },
-    c.driver !== 'sqlite' && { label: t('사용자·권한…'), icon: Users, onClick: () => { const def = defaultContext(c); void tools.users(c, def.db, def.schema) } },
-    c.driver !== 'sqlite' && { label: t('세션 관리자…'), icon: Activity, onClick: async () => { if (await ws.ensureConnected(c.id)) ui.open((close) => <SessionsDialog conn={c} onClose={close} />) } },
+    server && { label: t('서버 상태…'), icon: Gauge, onClick: () => void tools.stats(c) },
+    server && { label: t('사용자·권한…'), icon: Users, onClick: () => { const def = defaultContext(c); void tools.users(c, def.db, def.schema) } },
+    server && { label: t('세션 관리자…'), icon: Activity, onClick: async () => { if (await ws.ensureConnected(c.id)) ui.open((close) => <SessionsDialog conn={c} onClose={close} />) } },
     'sep',
     { label: t('고치기'), icon: Pencil, onClick: () => ws.editConnection(c) },
     { label: t('복제'), icon: Copy, onClick: async () => { await api.duplicateConnection(c.id); void qc.invalidateQueries({ queryKey: ['connections'] }) } },
@@ -641,8 +643,8 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
   const open = ctx.expanded.has(k)
   const isView = obj.kind === 'view'
   const selectSql = () => {
-    const name = c.driver === 'mysql' || c.driver === 'mariadb' ? '`' + obj.name.replace(/`/g, '``') + '`' : c.driver === 'mssql' ? '[' + obj.name.replace(/]/g, ']]') + ']' : '"' + obj.name.replace(/"/g, '""') + '"'
-    return c.driver === 'mssql' ? `SELECT TOP 100 * FROM ${name};` : `SELECT * FROM ${name} LIMIT 100;`
+    const d = dialectOf(c.driver)
+    return selectTop(d, quoteIdent(d, obj.name), 100) + ';'
   }
   const menu = (e: MouseEvent) => {
     const items: MenuItem[] = [
@@ -659,7 +661,7 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
       { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={ref2.db} schema={ref2.schema} only={obj.name} onClose={close} />) },
       'sep',
       { label: t('이름 복사'), icon: Copy, onClick: () => void api.copyText(obj.name) },
-      !(isView && c.driver === 'sqlite') && { label: t('이름 바꾸기…'), icon: PenLine, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'rename') },
+      !(isView && !features(dialectOf(c.driver)).renameView) && { label: t('이름 바꾸기…'), icon: PenLine, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'rename') },
       !isView && { label: t('비우기…'), icon: Eraser, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'truncate') },
       { label: t('지우기…'), icon: Trash2, danger: true, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'drop') },
       'sep',

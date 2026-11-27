@@ -9,6 +9,7 @@ import {
 import type { Cell, ObjectKind, RowChange, SortKey, TableData, TableRef } from '../../../shared/types'
 import { dialectOf, isBin } from '../../../shared/types'
 import { literal, quoteIdent } from '../../../shared/dialect'
+import { features } from '../../../shared/features'
 import { changesAsSql, previewChanges } from '../../../shared/edit'
 import { api, errorText, useColumns } from '../api'
 import { setDirty, useWs } from '../ws'
@@ -63,7 +64,9 @@ export function DataView({ tabId, connId, target, objKind, active, initialFilter
   const isOn = ws.connected.has(connId)
   const cols = useColumns(connId, target, isOn)
   const connReadOnly = conn?.readOnly === true
-  const readOnly = objKind === 'view' || connReadOnly
+  // ClickHouse는 행을 하나씩 고치지 못한다 (가져오기는 된다)
+  const noRowEdit = !features(d).editRows
+  const readOnly = objKind === 'view' || connReadOnly || noRowEdit
   const changes = count(pending)
   const fks = useQuery({ queryKey: ['fks', connId, target.db, target.schema, target.table], queryFn: () => api.foreignKeys(connId, target), enabled: isOn && objKind === 'table' })
   const [sel, setSel] = useState<Sel | null>(null)
@@ -387,7 +390,9 @@ export function DataView({ tabId, connId, target, objKind, active, initialFilter
         <button className="tbtn icon" title={t('새로고침')} onClick={() => void reload()}><RefreshCw className={loading ? 'spin' : ''} /></button>
         <span className="bar-sep" />
         {readOnly ? (
-          <span className="chip"><Lock />{connReadOnly ? t('읽기 전용 접속') : t('뷰는 읽기 전용')}</span>
+          <span className="chip" title={noRowEdit && !connReadOnly && objKind !== 'view' ? t('바꾸려면 SQL 편집기에서 ALTER TABLE … UPDATE/DELETE를 써 주세요') : undefined}>
+            <Lock />{connReadOnly ? t('읽기 전용 접속') : objKind === 'view' ? t('뷰는 읽기 전용') : t('이 DB는 표에서 직접 고칠 수 없어요')}
+          </span>
         ) : (
           <>
             <button className="tbtn" onClick={addRow} disabled={!data}><Plus />{t('행 추가')}</button>
@@ -408,7 +413,7 @@ export function DataView({ tabId, connId, target, objKind, active, initialFilter
         <span className="bar-sep" />
         <button className="tbtn" onClick={doExport} disabled={!data} title={t('CSV·엑셀·JSON 등으로 내보내기')}><Download />{t('내보내기')}</button>
         <button className="tbtn" onClick={() => conn && ui.open((close) => <DumpDialog conn={conn} db={target.db} schema={target.schema} only={target.table} onClose={close} />)} title={t('이 표를 CREATE·INSERT 문으로 내보내기')}><DatabaseBackup />SQL</button>
-        {!readOnly && <button className="tbtn" onClick={doImport}><Upload />{t('가져오기')}</button>}
+        {!(objKind === 'view' || connReadOnly) && <button className="tbtn" onClick={doImport}><Upload />{t('가져오기')}</button>}
       </div>
       {keyKind === 'all' && !readOnly && <div className="banner warn"><KeyRound />{t('기본 키가 없는 표예요. 고치거나 지울 때 모든 열 값이 같은 행 하나를 찾아요.')}</div>}
       {error && <div className="banner error">{error}</div>}

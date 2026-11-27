@@ -2,7 +2,7 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, closeCompletion, completionKeymap } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { MSSQL, MySQL, MariaSQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
+import { MSSQL, MySQL, MariaSQL, PLSQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
 import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from '@codemirror/language'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
@@ -35,7 +35,8 @@ export interface NameInfo {
   columns: { name: string; type: string; pk: boolean }[]
 }
 
-const DIALECT: Record<DriverKind, SQLDialect> = { sqlite: SQLite, mysql: MySQL, mariadb: MariaSQL, postgres: PostgreSQL, mssql: MSSQL }
+// ClickHouse는 따옴표(`)·# 주석이 MySQL과 같고, DuckDB는 PostgreSQL에 가깝다
+const DIALECT: Record<DriverKind, SQLDialect> = { sqlite: SQLite, mysql: MySQL, mariadb: MariaSQL, postgres: PostgreSQL, mssql: MSSQL, oracle: PLSQL, clickhouse: MySQL, duckdb: PostgreSQL }
 
 /** 방언 + 자동 완성(lang-sql: 표·키워드·표.열 / 우리 것: 문장에 나온 표의 열) */
 const language = (driver: DriverKind, schema?: Record<string, string[]>) => [

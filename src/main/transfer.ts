@@ -2,7 +2,6 @@
 import { designSql, tableName } from '../shared/alter'
 import { convertDesign, orderByParents } from '../shared/compare'
 import { quoteIdent } from '../shared/dialect'
-import { buildInsertMany } from '../shared/edit'
 import { t } from '../shared/i18n'
 import type { Cell, TransferOptions, TransferResult } from '../shared/types'
 import type { DriverModule, MetaOptions, Session } from './drivers/base'
@@ -49,7 +48,8 @@ export async function transferData(src: TransferSide, dst: TransferSide, tables:
           existing.set(name.toLowerCase(), name)
           row.created = true
         } else if (o.truncate) {
-          await dst.s.exec(`DELETE FROM ${tableName(dd, w, target)}`)
+          // ClickHouse의 DELETE는 표시만 하고 나중에 지워서 TRUNCATE로
+          await dst.s.exec(`${dd === 'clickhouse' ? 'TRUNCATE TABLE' : 'DELETE FROM'} ${tableName(dd, w, target)}`)
         }
         const ddesign = await dst.mod.design(dst.s, dstRef(target))
         const dcols = new Map(ddesign.columns.filter((c) => !c.generated).map((c) => [c.name.toLowerCase(), c]))
@@ -66,7 +66,7 @@ export async function transferData(src: TransferSide, dst: TransferSide, tables:
           let buf: Cell[][] = []
           const flush = async () => {
             if (!buf.length) return
-            for (const b of buildInsertMany(dd, dstRef(target!), cols, buf)) await tx.exec(b.sql, b.params)
+            await tx.insertMany(dstRef(target!), cols, buf)
             n += buf.length
             buf = []
           }
@@ -81,6 +81,19 @@ export async function transferData(src: TransferSide, dst: TransferSide, tables:
           if (dd === 'mssql' && identity) await tx.exec(`SET IDENTITY_INSERT ${tn} OFF`)
           return n
         })
+        // Oracle: IDENTITY를 옮긴 값 다음부터 (START WITH LIMIT VALUE = 지금 가장 큰 값 다음)
+        if (dd === 'oracle' && identity) {
+          const r = await dst.s.query(
+            `SELECT i.column_name, i.generation_type, c.default_on_null FROM all_tab_identity_cols i
+             JOIN all_tab_columns c ON c.owner = i.owner AND c.table_name = i.table_name AND c.column_name = i.column_name
+             WHERE i.owner = :1 AND i.table_name = :2`,
+            [dst.schema, target],
+          ).catch(() => ({ rows: [] as Cell[][] }))
+          for (const x of r.rows) {
+            const gen = String(x[1]) === 'ALWAYS' ? 'ALWAYS' : String(x[2]) === 'YES' ? 'BY DEFAULT ON NULL' : 'BY DEFAULT'
+            await dst.s.exec(`ALTER TABLE ${tn} MODIFY (${quoteIdent(dd, String(x[0]))} GENERATED ${gen} AS IDENTITY (START WITH LIMIT VALUE))`).catch(() => undefined)
+          }
+        }
         // PostgreSQL: 자동 번호를 옮긴 값 다음부터
         if (dd === 'postgres') {
           for (const c of ddesign.columns.filter((x) => x.autoIncrement || /^nextval\(/i.test(x.default))) {
