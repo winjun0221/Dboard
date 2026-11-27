@@ -159,9 +159,9 @@ export async function importCsv(live: Live, ref: TableRef, file: string, o: Impo
         await tx.exec(b.sql, b.params)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        throw new Error(t('{from}~{to}번째 행을 넣다가 실패해서 하나도 넣지 않았어요.\n{error}', { from: done + 1, to: done + b.params.length / picks.length, error: msg }))
+        throw new Error(t('{from}~{to}번째 행을 넣다가 실패해서 하나도 넣지 않았어요.\n{error}', { from: done + 1, to: done + (b.rows ?? 0), error: msg }))
       }
-      done += b.params.length / picks.length
+      done += b.rows ?? 0
     }
     return done
   })

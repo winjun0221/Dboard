@@ -2,7 +2,7 @@
 import { useRef, useState, type MouseEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database, FolderOpen, Save, Activity, FileCode2, Download, Upload,
+  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database, FolderOpen, Save, Activity, FileCode2, Download, Upload, GitCompareArrows, ArrowRightLeft,
 } from 'lucide-react'
 import type { AppSettings } from '../../../shared/types'
 import { api, errorText } from '../api'
@@ -16,6 +16,8 @@ import { ShortcutsDialog } from '../dialogs/ShortcutsDialog'
 import { DumpDialog } from '../dialogs/DumpDialog'
 import { RunFileDialog } from '../dialogs/RunFileDialog'
 import { SessionsDialog } from '../dialogs/SessionsDialog'
+import { CompareDialog } from '../dialogs/CompareDialog'
+import { TransferDialog } from '../dialogs/TransferDialog'
 
 type MenuName = 'file' | 'view' | 'sql' | 'help'
 
@@ -52,7 +54,7 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
 
   // 지금 탭의 접속·DB·스키마 (덤프·SQL 파일 실행 대상)
   const here = activeTab
-    ? activeTab.kind === 'editor'
+    ? activeTab.kind !== 'table'
       ? { connId: activeTab.connId, db: activeTab.db, schema: activeTab.schema, table: undefined }
       : { connId: activeTab.connId, db: activeTab.ref.db, schema: activeTab.ref.schema, table: activeTab.ref.table }
     : null
@@ -93,6 +95,13 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
           { label: t('DDL 내보내기…'), icon: ScrollText, disabled: !here?.db, onClick: () => void withConn((h) => ui.open((close) => <DumpDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} content="structure" onClose={close} />)) },
           { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, disabled: !here?.db, onClick: () => void withConn((h) => ui.open((close) => <DumpDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} only={h.table} onClose={close} />)) },
           { label: t('SQL 파일 실행…'), icon: FilePlay, disabled: !here, onClick: () => void withConn((h) => ui.open((close) => <RunFileDialog conn={ws.conn(h.connId)!} ensureConnected={() => ws.ensureConnected(h.connId)} db={h.db} schema={h.schema} onClose={close} />)) },
+          { label: t('스키마 비교…'), icon: GitCompareArrows, disabled: !here, onClick: () => void withConn((h) => ui.open((close) => (
+            <CompareDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} connections={ws.connections} ensureConnected={ws.ensureConnected} onClose={close}
+              openEditor={(connId, d, s, text) => { close(); ws.openEditor(connId, { db: d, schema: s, text }) }} />
+          ))) },
+          { label: t('데이터 옮기기…'), icon: ArrowRightLeft, disabled: !here, onClick: () => void withConn((h) => ui.open((close) => (
+            <TransferDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} only={h.table} connections={ws.connections} ensureConnected={ws.ensureConnected} onClose={close} />
+          ))) },
           'sep',
           { label: t('접속 목록 내보내기…'), icon: Download, disabled: ws.connections.length === 0, onClick: () => void exportConns() },
           { label: t('접속 목록 가져오기…'), icon: Upload, onClick: () => void importConns() },

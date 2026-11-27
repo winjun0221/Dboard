@@ -33,6 +33,9 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 - **SQL script files** — save (`Ctrl+S`) and open (`Ctrl+O`) `.sql` files, script list (scripts folder and recent files), open editors come back when you restart
 - **Result grid** — smooth with tens of thousands of rows, click to sort, copy cells or ranges (paste straight into Excel), sum/avg/min/max of the selection, record view, export to CSV, Excel, JSON, Markdown or INSERT statements
 - **Edit table data** — edit cells, add and delete rows, undo (`Ctrl+Z`), preview the SQL before saving, save in one transaction (everything is rolled back if anything fails), follow foreign keys, copy rows as INSERT/UPDATE/DELETE, value viewer (pretty JSON, images, hex, save to file)
+- **ER diagram** — tables and foreign keys of a schema as a diagram (referenced tables laid out on the left), drag to move (positions remembered), zoom, find, show only the tables related to one table, save as PNG or SVG
+- **Schema compare** — compare table structures of two databases or schemas of the same kind, see the differences, and run per-table SQL that makes the target match the source
+- **Data transfer** — copy tables to another database, even of a different kind (e.g. MySQL → PostgreSQL). Missing tables are created with converted types, parent tables go first, one transaction per table
 - **DDL and CSV import** — view and copy the CREATE statement, import CSV (UTF-8 and EUC-KR detected automatically, column mapping)
 - **SQL dump and SQL files** — export a database, schema or table as structure (DDL) and data (INSERT) into a `.sql` file (foreign-key order, auto-increment values and computed columns handled so it loads into another database), and run a `.sql` file statement by statement (stops and rolls back on error)
 - Korean and English UI, light and dark themes

@@ -8,6 +8,8 @@ export interface Built {
   params: Cell[]
   /** UPDATE·DELETE는 정확히 한 행이 바뀌어야 한다 (아니면 되돌림) */
   expectOne: boolean
+  /** 여러 행 INSERT의 행 수 (NULL은 자리 표시를 안 써서 params 수로 셀 수 없다) */
+  rows?: number
 }
 
 class Params {
@@ -99,8 +101,9 @@ export function buildInsertMany(d: Dialect, ref: TableRef, columns: string[], ro
   for (let i = 0; i < rows.length; i += perStmt) {
     const p = new Params(d)
     const chunk = rows.slice(i, i + perStmt)
-    const values = chunk.map((r) => '(' + columns.map((_, k) => p.add(r[k] ?? null)).join(', ') + ')').join(', ')
-    out.push({ sql: head + values, params: p.list, expectOne: false })
+    // NULL은 자리 표시 대신 글자로 (SQL Server는 타입 없는 NULL 자리를 nvarchar로 봐서 바이너리·날짜 열에 못 넣는다)
+    const values = chunk.map((r) => '(' + columns.map((_, k) => (r[k] === null || r[k] === undefined ? 'NULL' : p.add(r[k]))).join(', ') + ')').join(', ')
+    out.push({ sql: head + values, params: p.list, expectOne: false, rows: chunk.length })
   }
   return out
 }

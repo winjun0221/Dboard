@@ -45,7 +45,9 @@ export function toCell(v: unknown, binLimit = 64): Cell {
 }
 
 /** 화면에서 온 값을 드라이버에 넘길 값으로 (바이너리 칸은 앞부분만 있어서 넘길 수 없다) */
-export function toParam(v: Cell): string | number | boolean | null {
+/** 값 → 드라이버 자리 표시 값. 바이너리는 전체 값(데이터 옮기기)일 때만 — 화면 표의 앞부분만 있는 값은 막는다 */
+export function toParam(v: Cell): string | number | boolean | null | Buffer {
   if (v === null || typeof v !== 'object') return v
+  if (v.bin.length === v.size * 2) return Buffer.from(v.bin, 'hex')
   throw new Error(t('바이너리 값은 여기서 바꿀 수 없어요'))
 }

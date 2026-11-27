@@ -352,6 +352,70 @@ export interface SqlFileResult {
   ms: number
 }
 
+// ───────── ER 다이어그램 ─────────
+
+export interface ErTable {
+  name: string
+  comment: string
+  columns: { name: string; type: string; pk: boolean; nullable: boolean }[]
+}
+
+/** 외래 키 선: from 표의 열 → to 표의 열 (같은 스키마 안) */
+export interface ErLink {
+  name: string
+  from: string
+  fromColumns: string[]
+  to: string
+  toColumns: string[]
+}
+
+export interface ErModel {
+  tables: ErTable[]
+  links: ErLink[]
+  /** 표가 너무 많아 앞쪽만 담았는지 */
+  truncated: boolean
+}
+
+// ───────── 스키마 비교·데이터 옮기기 ─────────
+
+/** same 같음 · changed 다름 · source 원본에만 · target 대상에만 */
+export type CompareStatus = 'same' | 'changed' | 'source' | 'target'
+
+export interface CompareItem {
+  name: string
+  kind: ObjectKind
+  status: CompareStatus
+  /** 사람이 읽는 바뀐 점 */
+  changes: string[]
+  /** 대상을 원본처럼 만드는 문장 (뷰는 없음) */
+  statements: string[]
+  warnings: string[]
+  /** SQL을 만들지 못한 이유 */
+  error: string | null
+}
+
+export interface CompareResult {
+  dialect: Dialect
+  /** 순서대로 실행하면 된다: 새 표(외래 키 부모 먼저) → 바뀐 표 → 대상에만 있는 것 → 뷰 */
+  items: CompareItem[]
+}
+
+export interface TransferOptions {
+  /** 대상에 표가 없으면 만들기 (타입을 대상 DB에 맞춤, 외래 키는 빼고) */
+  create: boolean
+  /** 옮기기 전에 대상 표 비우기 */
+  truncate: boolean
+  /** INSERT 한 번에 넣을 행 수 */
+  batch: number
+  /** 표 하나가 실패하면 멈추기 (아니면 다음 표로) */
+  stopOnError: boolean
+}
+
+export interface TransferResult {
+  tables: { name: string; rows: number; created: boolean; error: string | null }[]
+  ms: number
+}
+
 // ───────── 세션 관리자 ─────────
 
 /** 서버에 붙어 있는 연결 하나 */
@@ -466,6 +530,14 @@ export interface Api {
   extraObjects(connId: string, db: string, schema: string): Promise<ExtraObject[]>
   /** 개체 원본 (CREATE 문) */
   objectSource(connId: string, db: string, schema: string, kind: ExtraKind, id: string): Promise<string>
+  /** 스키마 비교: 대상(dst)을 원본(src)처럼 만드는 SQL을 표마다 (같은 종류 DB끼리) */
+  compareSchemas(srcConn: string, srcDb: string, srcSchema: string, dstConn: string, dstDb: string, dstSchema: string): Promise<CompareResult>
+  /** 데이터 옮기기 (다른 종류 DB도). tabKey로 취소(cancelSql) */
+  transferData(srcConn: string, srcDb: string, srcSchema: string, dstConn: string, dstDb: string, dstSchema: string, tables: string[], o: TransferOptions, tabKey: string): Promise<TransferResult>
+  /** ER 다이어그램: 스키마(DB)의 표·열·외래 키 */
+  erModel(connId: string, db: string, schema: string): Promise<ErModel>
+  /** 그림 저장 (svg = SVG 글, png = base64) */
+  saveImage(defaultName: string, kind: 'png' | 'svg', data: string): Promise<string | null>
   /** 세션 관리자: 서버의 연결 목록, 쿼리 취소(queryOnly) 또는 연결 끊기 */
   serverSessions(connId: string): Promise<ServerSession[]>
   killSession(connId: string, sessionId: string, queryOnly: boolean): Promise<void>
@@ -532,7 +604,7 @@ export interface Api {
 export const API_METHODS = [
   'listConnections', 'saveConnection', 'deleteConnection', 'duplicateConnection', 'moveConnection', 'setConnectionFolder', 'exportConnections', 'importConnections', 'testConnection', 'connect',
   'disconnect', 'connectedIds', 'pickSqliteFile', 'pickKeyFile', 'forgetHostKey',
-  'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion', 'extraObjects', 'objectSource', 'serverSessions', 'killSession', 'tableDesign', 'runDdl',
+  'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion', 'extraObjects', 'objectSource', 'serverSessions', 'killSession', 'erModel', 'saveImage', 'compareSchemas', 'transferData', 'tableDesign', 'runDdl',
   'runSql', 'cancelSql', 'commitTx', 'rollbackTx', 'explain', 'foreignKeys', 'cellValue', 'saveCellValue', 'closeSession', 'history', 'clearHistory',
   'tableData', 'countRows', 'applyChanges',
   'saveCsv', 'exportQueryCsv', 'exportTableCsv', 'pickCsv', 'previewCsv', 'importCsv', 'exportDump', 'pickSqlFile', 'runSqlFile',

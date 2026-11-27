@@ -1,6 +1,6 @@
 // 상태 줄: 왼쪽 = 지금 탭의 위치(접속 › DB › 스키마 › 표), 오른쪽 = 그 접속의 연결 상태 · 열린 연결 수 · 버전
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, Database, Eye, FolderTree, Lock, ShieldAlert, SquareTerminal, Table2 } from 'lucide-react'
+import { ChevronRight, Database, Eye, FolderTree, Lock, ShieldAlert, SquareTerminal, Table2, Network } from 'lucide-react'
 import { api } from '../api'
 import { useWs } from '../ws'
 import { t } from '../i18n'
@@ -16,11 +16,12 @@ export function StatusBar() {
 
   const crumbs: { icon: typeof Database; text: string }[] = []
   if (tab && conn) {
-    const db = tab.kind === 'editor' ? tab.db : tab.ref.db
-    const schema = tab.kind === 'editor' ? tab.schema : tab.ref.schema
+    const db = tab.kind === 'table' ? tab.ref.db : tab.db
+    const schema = tab.kind === 'table' ? tab.ref.schema : tab.schema
     if (db && conn.driver !== 'sqlite') crumbs.push({ icon: Database, text: db })
     if (schema) crumbs.push({ icon: FolderTree, text: schema })
     if (tab.kind === 'table') crumbs.push({ icon: tab.objKind === 'view' ? Eye : Table2, text: tab.newTable ? t('새 표') : tab.ref.table })
+    else if (tab.kind === 'er') crumbs.push({ icon: Network, text: tab.focus ? t('ER: {name}', { name: tab.focus }) : 'ER' })
     else crumbs.push({ icon: SquareTerminal, text: tab.title })
   }
 

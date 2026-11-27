@@ -45,7 +45,8 @@ function value(c: ColValue, binLimit: number): Cell {
   return toCell(v, binLimit)
 }
 
-function paramType(v: string | number | boolean | null) {
+function paramType(v: string | number | boolean | null | Buffer) {
+  if (Buffer.isBuffer(v)) return TYPES.VarBinary
   if (typeof v === 'boolean') return TYPES.Bit
   if (typeof v === 'number') return Number.isInteger(v) ? TYPES.BigInt : TYPES.Float
   return TYPES.NVarChar

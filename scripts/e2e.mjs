@@ -706,6 +706,8 @@ try {
     return j.connections.some((x) => x.name === 'shop') && !/secrets|password"\s*:\s*"/.test(text)
   })())
   const importFile = path.join(out, 'import.json')
+  const importedDb = path.join(out, 'imported.db')
+  fs.writeFileSync(importedDb, '')
   fs.writeFileSync(importFile, JSON.stringify({ app: 'DBoard', version: 1, connections: [{ name: 'imported-db', driver: 'sqlite', file: path.join(out, 'imported.db'), folder: 'Local' }] }))
   await nextDialog('open', importFile)
   await win.locator('.menubar-btn', { hasText: '파일' }).click()
@@ -713,6 +715,59 @@ try {
   check('import connections', await until(async () => (await win.locator('.tree-row.conn-row', { hasText: 'imported-db' }).count()) === 1) && connFile().length >= 2)
   await menu(folderRow, '폴더 풀기')
   check('folder: ungroup', await until(async () => (await folderRow.count()) === 0) && await until(() => connFile().every((x) => !x.folder)))
+
+  // ── ER 다이어그램 · 스키마 비교 · 데이터 옮기기 ──
+  const mainRow = win.locator('.tree-row', { hasText: /^main$/ }).first()
+  await menu(mainRow, 'ER 다이어그램')
+  await win.waitForSelector('.tab-pane:visible .er-canvas svg')
+  const er = win.locator('.tab-pane:visible .er-view')
+  check('er: tables drawn', await until(async () => (await er.locator('.er-table').count()) >= 4), String(await er.locator('.er-table').count()))
+  check('er: foreign key line', (await er.locator('.er-link').count()) >= 1)
+  const erBox = er.locator('.er-table[data-table="orders"]')
+  const erBefore = await erBox.getAttribute('transform')
+  const bb = await erBox.boundingBox()
+  await win.mouse.move(bb.x + 20, bb.y + 10)
+  await win.mouse.down()
+  await win.mouse.move(bb.x + 140, bb.y + 90, { steps: 6 })
+  await win.mouse.up()
+  check('er: drag a table', await until(async () => (await erBox.getAttribute('transform')) !== erBefore))
+  await shot(win, '17-er.png')
+  const png = path.join(out, 'er.png')
+  await nextDialog('save', png)
+  await er.locator('.er-bar button', { hasText: 'PNG' }).click()
+  check('er: save PNG', await until(() => fs.existsSync(png) && fs.readFileSync(png).subarray(1, 4).toString() === 'PNG'))
+  await win.keyboard.press('Control+w')
+
+  await menu(mainRow, '스키마 비교…')
+  await win.waitForSelector('.dialog .compare-head')
+  await win.locator('.dialog select[aria-label="대상 접속"]').selectOption({ label: 'imported-db' })
+  await win.locator('.dialog .compare-head button', { hasText: '비교' }).click()
+  check('compare: tables only in source', await until(async () => (await win.locator('.dialog .compare-row.st-source').count()) >= 3))
+  await shot(win, '18-compare.png')
+  await win.locator('.dialog .dialog-foot button', { hasText: '대상에 실행' }).click()
+  await win.waitForSelector('.dialog .preview-sql')
+  await submit()
+  const imported = (q) => {
+    const db = new DatabaseSync(importedDb)
+    try {
+      return db.prepare(q).all()
+    } finally {
+      db.close()
+    }
+  }
+  check('compare: target created like the source', await until(() => imported("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('customers', 'orders')").length === 2))
+  check('compare: no differences after applying', await until(async () => (await win.locator('.dialog .compare-row.kind-table.st-source').count()) === 0 && (await win.locator('.dialog .compare-row.kind-table.st-changed').count()) === 0),
+    (await win.locator('.dialog .compare-list').innerText().catch(() => '')).replace(/\n/g, ' | '))
+  await win.keyboard.press('Escape')
+
+  await menu(win.locator('.tree-row', { hasText: /^customers$/ }).first(), '데이터 옮기기…')
+  await win.waitForSelector('.dialog .transfer-body')
+  await win.locator('.dialog select[aria-label="대상 접속"]').selectOption({ label: 'imported-db' })
+  await win.locator('.dialog .dialog-foot button', { hasText: '옮기기' }).click()
+  const want = sql('SELECT COUNT(*) AS n FROM customers')[0].n
+  check('transfer: rows copied', await until(() => imported('SELECT COUNT(*) AS n FROM customers')[0]?.n === want, 15000), `${want}`)
+  check('transfer: result shown', await until(async () => (await win.locator('.dialog .transfer-row .ok').count()) === 1))
+  await win.keyboard.press('Escape')
 
   if (process.env.DBOARD_E2E_SERVERS === '1') await servers(win, submit)
 

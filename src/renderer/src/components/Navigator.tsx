@@ -1,7 +1,7 @@
 // 왼쪽 탐색기: 접속 → DB → (스키마) → 표·뷰 묶음 → 표 → 열·인덱스. 펼칠 때 읽고, 새로고침 전까지 기억
 import { useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import {
-  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eraser, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, PencilRuler, PenLine, Plug, Plus, RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download, Workflow, SquareFunction, Zap, ListOrdered, CalendarClock, Activity, FolderInput, FolderMinus,
+  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eraser, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, PencilRuler, PenLine, Plug, Plus, RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download, Workflow, SquareFunction, Zap, ListOrdered, CalendarClock, Activity, FolderInput, FolderMinus, Network, GitCompareArrows, ArrowRightLeft,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { dropExtraSql, objectSql, type ObjectAction } from '../../../shared/alter'
@@ -18,6 +18,23 @@ import { RunFileDialog } from '../dialogs/RunFileDialog'
 import { DdlDialog } from '../dialogs/DdlDialog'
 import { RenameDialog } from '../dialogs/RenameDialog'
 import { SessionsDialog } from '../dialogs/SessionsDialog'
+import { CompareDialog } from '../dialogs/CompareDialog'
+import { TransferDialog } from '../dialogs/TransferDialog'
+
+/** 스키마 비교·데이터 옮기기 창 (대화 상자 안에서 useWs를 못 쓰니 필요한 것을 넘긴다) */
+function useCompareTransfer() {
+  const ws = useWs()
+  const ui = useUi()
+  return {
+    compare: (c: ConnectionInfo, db: string, schema: string) => ui.open((close) => (
+      <CompareDialog conn={c} db={db} schema={schema} connections={ws.connections} ensureConnected={ws.ensureConnected} onClose={close}
+        openEditor={(connId, d, s, text) => { close(); ws.openEditor(connId, { db: d, schema: s, text }) }} />
+    )),
+    transfer: (c: ConnectionInfo, db: string, schema: string, only?: string) => ui.open((close) => (
+      <TransferDialog conn={c} db={db} schema={schema} only={only} connections={ws.connections} ensureConnected={ws.ensureConnected} onClose={close} />
+    )),
+  }
+}
 
 /** 표·뷰 이름 바꾸기·비우기·지우기: 실행할 SQL을 보여 주고 확인받은 뒤 실행. 열린 탭도 맞춘다 */
 function useObjectAction() {
@@ -405,6 +422,7 @@ function ConnNode({ c, folders, ctx }: { c: ConnectionInfo; folders: string[]; c
 function DbNode({ c, db, hasSchemas, ctx }: { c: ConnectionInfo; db: string; hasSchemas: boolean; ctx: TreeCtx }) {
   const ws = useWs()
   const ui = useUi()
+  const ct = useCompareTransfer()
   const k = `d:${c.id}:${db}`
   const open = ctx.expanded.has(k)
   const schemas = useSchemas(c.id, db, open && hasSchemas)
@@ -412,6 +430,9 @@ function DbNode({ c, db, hasSchemas, ctx }: { c: ConnectionInfo; db: string; has
   const menu = (e: MouseEvent) => ui.menu(e, [
     { label: t('새 SQL 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db, schema: hasSchemas ? def.schema : '' }) },
     !hasSchemas && { label: t('새 표…'), icon: Plus, disabled: c.readOnly === true, onClick: () => ws.openNewTable(c.id, db, '') },
+    !hasSchemas && { label: t('ER 다이어그램'), icon: Network, onClick: () => ws.openEr(c.id, db, '') },
+    !hasSchemas && { label: t('스키마 비교…'), icon: GitCompareArrows, onClick: () => ct.compare(c, db, '') },
+    !hasSchemas && { label: t('데이터 옮기기…'), icon: ArrowRightLeft, onClick: () => ct.transfer(c, db, '') },
     'sep',
     // 스키마가 있는 DB(PostgreSQL·SQL Server)는 스키마에서 덤프
     !hasSchemas && { label: t('DDL 내보내기…'), icon: ScrollText, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema="" content="structure" onClose={close} />) },
@@ -434,11 +455,15 @@ function DbNode({ c, db, hasSchemas, ctx }: { c: ConnectionInfo; db: string; has
 function SchemaNode({ c, db, schema, ctx }: { c: ConnectionInfo; db: string; schema: string; ctx: TreeCtx }) {
   const ws = useWs()
   const ui = useUi()
+  const ct = useCompareTransfer()
   const k = `s:${c.id}:${db}:${schema}`
   const open = ctx.expanded.has(k)
   const menu = (e: MouseEvent) => ui.menu(e, [
     { label: t('새 SQL 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db, schema }) },
     { label: t('새 표…'), icon: Plus, disabled: c.readOnly === true, onClick: () => ws.openNewTable(c.id, db, schema) },
+    { label: t('ER 다이어그램'), icon: Network, onClick: () => ws.openEr(c.id, db, schema) },
+    { label: t('스키마 비교…'), icon: GitCompareArrows, onClick: () => ct.compare(c, db, schema) },
+    { label: t('데이터 옮기기…'), icon: ArrowRightLeft, onClick: () => ct.transfer(c, db, schema) },
     'sep',
     { label: t('DDL 내보내기…'), icon: ScrollText, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema={schema} content="structure" onClose={close} />) },
     { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema={schema} onClose={close} />) },
@@ -572,6 +597,7 @@ function Folder2({ c, db, schema, kind, items, depth, ctx }: { c: ConnectionInfo
 function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: TableRef; obj: DbObject; depth: number; ctx: TreeCtx }) {
   const ws = useWs()
   const ui = useUi()
+  const ct = useCompareTransfer()
   const qc = useQueryClient()
   const objectAction = useObjectAction()
   const k = `t:${c.id}:${ref2.db}:${ref2.schema}:${obj.name}`
@@ -587,6 +613,8 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
       { label: t('구조 (열)'), icon: Columns3, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'columns') },
       { label: t('DDL 보기'), icon: FileCode2, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'ddl') },
       !isView && { label: t('표 설계'), icon: PencilRuler, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'design') },
+      !isView && { label: t('ER 다이어그램 (관련 표)'), icon: Network, onClick: () => ws.openEr(c.id, ref2.db, ref2.schema, obj.name) },
+      !isView && { label: t('데이터 옮기기…'), icon: ArrowRightLeft, onClick: () => ct.transfer(c, ref2.db, ref2.schema, obj.name) },
       'sep',
       { label: t('SELECT 문으로 새 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db: ref2.db, schema: ref2.schema, text: selectSql() }) },
       !isView && { label: t('CSV 가져오기…'), icon: Upload, onClick: () => ui.open((close) => <ImportDialog connId={c.id} target={ref2} onClose={close} onDone={() => void qc.invalidateQueries({ queryKey: ['table-data', c.id] })} />) },

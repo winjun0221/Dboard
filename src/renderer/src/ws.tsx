@@ -14,7 +14,9 @@ export type TableSub = 'data' | 'columns' | 'indexes' | 'ddl' | 'design'
 export type EditorTab = { kind: 'editor'; id: string; connId: string; db: string; schema: string; title: string; manual?: boolean; file?: string; modified?: boolean }
 /** filter·filterSeq: 외래 키 따라가기로 열 때 처음 조건 (seq가 바뀌면 다시 건다). newTable: 아직 만들지 않은 새 표(설계만) */
 export type TableTab = { kind: 'table'; id: string; connId: string; ref: TableRef; objKind: ObjectKind; sub: TableSub; filter?: string; filterSeq?: number; newTable?: boolean }
-export type Tab = EditorTab | TableTab
+/** ER 다이어그램 (focus: 그 표와 바로 이어진 표만) */
+export type ErTab = { kind: 'er'; id: string; connId: string; db: string; schema: string; focus?: string }
+export type Tab = EditorTab | TableTab | ErTab
 export type Panel = 'nav' | 'history' | 'scripts'
 
 interface Ws {
@@ -33,9 +35,11 @@ interface Ws {
   /** .sql 파일을 편집기로 (이미 열려 있으면 그 탭) — 마지막으로 쓴 접속으로 */
   openScript(f: SqlFile): void
   openTable(connId: string, ref: TableRef, kind: ObjectKind, sub?: TableSub, filter?: string): void
+  /** ER 다이어그램 탭 (같은 DB·스키마면 그 탭으로) */
+  openEr(connId: string, db: string, schema: string, focus?: string): void
   /** 새 표 설계 탭 */
   openNewTable(connId: string, db: string, schema: string): void
-  updateTab(id: string, patch: Partial<EditorTab> | Partial<TableTab>): void
+  updateTab(id: string, patch: Partial<EditorTab> | Partial<TableTab> | Partial<ErTab>): void
   /** 탭 순서 바꾸기 (끌어 놓기) */
   reorder(ids: string[]): void
   editConnection(info?: ConnectionInfo, driver?: DriverKind): void
@@ -67,7 +71,7 @@ const textKey = (id: string) => 'dboard.editor.' + id
 function loadTabs(): { tabs: Tab[]; active: string | null; seq: number } {
   try {
     const v = JSON.parse(localStorage.getItem(TABS_KEY) ?? '') as { tabs: Tab[]; active: string | null; seq: number }
-    if (Array.isArray(v.tabs)) return { tabs: v.tabs.filter((x) => x && (x.kind === 'editor' || x.kind === 'table')), active: v.active ?? null, seq: v.seq ?? 0 }
+    if (Array.isArray(v.tabs)) return { tabs: v.tabs.filter((x) => x && (x.kind === 'editor' || x.kind === 'table' || x.kind === 'er')), active: v.active ?? null, seq: v.seq ?? 0 }
   } catch {
     // 처음
   }
@@ -281,7 +285,20 @@ export function WsProvider({ children }: { children: ReactNode }) {
     setLastConnId(connId)
   }, [])
 
-  const updateTab = useCallback((id: string, patch: Partial<EditorTab> | Partial<TableTab>) => {
+  const openEr = useCallback((connId: string, db: string, schema: string, focus?: string) => {
+    const found = tabs.find((x) => x.kind === 'er' && x.connId === connId && x.db === db && x.schema === schema)
+    if (found) {
+      setTabs((list) => list.map((x) => (x.id === found.id ? ({ ...x, focus } as Tab) : x)))
+      setActiveState(found.id)
+    } else {
+      const id = 'er-' + randomKey()
+      setTabs((list) => [...list, { kind: 'er', id, connId, db, schema, ...(focus ? { focus } : {}) }])
+      setActiveState(id)
+    }
+    setLastConnId(connId)
+  }, [tabs])
+
+  const updateTab = useCallback((id: string, patch: Partial<EditorTab> | Partial<TableTab> | Partial<ErTab>) => {
     setTabs((list) => list.map((x) => (x.id === id ? ({ ...x, ...patch } as Tab) : x)))
   }, [])
 
@@ -314,8 +331,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
   const ws = useMemo<Ws>(() => ({
     connections, conn, connected, connecting, ensureConnected, disconnect, tabs, active, setActive, closeTab, closeOthers,
-    openEditor, openScript, openTable, openNewTable, updateTab, reorder, editConnection, settings, panel, setPanel, lastConnId,
-  }), [connections, conn, connected, connecting, ensureConnected, disconnect, tabs, active, setActive, closeTab, closeOthers, openEditor, openScript, openTable, openNewTable, updateTab, reorder, editConnection, settings, panel, lastConnId])
+    openEditor, openScript, openTable, openNewTable, openEr, updateTab, reorder, editConnection, settings, panel, setPanel, lastConnId,
+  }), [connections, conn, connected, connecting, ensureConnected, disconnect, tabs, active, setActive, closeTab, closeOthers, openEditor, openScript, openTable, openNewTable, openEr, updateTab, reorder, editConnection, settings, panel, lastConnId])
 
   return <WsContext.Provider value={ws}>{children}</WsContext.Provider>
 }

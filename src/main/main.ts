@@ -12,9 +12,12 @@ import { Manager, type Resolved } from './conn'
 import { setSqliteWorkerCode } from './drivers/sqlite'
 import {
   allowFile, checkBool, checkCell, checkChanges, checkConfig, checkCsvRead, checkCsvWrite, checkDataQuery, checkDumpObjects, checkDumpOptions, checkId, checkImport, checkInt,
-  checkName, checkOneOf, checkPickedFile, checkRef, checkSecrets, checkSort, checkSql, checkTabKey, checkText, validateForConnect,
+  checkName, checkObject, checkOneOf, checkPickedFile, checkRef, checkSecrets, checkSort, checkSql, checkTabKey, checkText, validateForConnect,
 } from './guard'
 import * as dump from './dump'
+import { compareSchemas } from './compare'
+import { erModel } from './er'
+import { transferData } from './transfer'
 import { explain } from './explain'
 import { EXTENSIONS } from './export'
 import * as ops from './ops'
@@ -251,6 +254,10 @@ function listScriptFiles(): ScriptEntry[] {
   return out
 }
 
+/** 진행 중인 데이터 옮기기와 취소 요청 (tabKey) */
+const transfers = new Set<string>()
+const transferCancels = new Set<string>()
+
 // ───────── IPC ─────────
 
 type Handlers = { [K in keyof Api]: (...args: unknown[]) => ReturnType<Api[K]> }
@@ -395,6 +402,62 @@ const handlers: Handlers = {
     return live.mod.completion(await live.metaSession(d), d, checkName(schema))
   },
 
+  compareSchemas: async (a, adb, asch, b, bdb, bsch) => {
+    const ca = checkConnId(a)
+    const cb = checkConnId(b)
+    const la = manager.get(ca)
+    const lb = manager.get(cb)
+    if (la.mod.dialect !== lb.mod.dialect) throw new Error(t('같은 종류의 DB끼리만 비교할 수 있어요'))
+    const da = checkName(adb) || la.defaultDb
+    const dbb = checkName(bdb) || lb.defaultDb
+    return compareSchemas(
+      { mod: la.mod, s: await la.metaSession(da), db: da, schema: checkName(asch), o: metaOpts(ca) },
+      { mod: lb.mod, s: await lb.metaSession(dbb), db: dbb, schema: checkName(bsch), o: metaOpts(cb) },
+    )
+  },
+  transferData: async (a, adb, asch, b, bdb, bsch, tables, o, tabKey) => {
+    const ca = checkConnId(a)
+    const cb = checkConnId(b)
+    checkWritable(cb, t('데이터를 옮길'))
+    const la = manager.get(ca)
+    const lb = manager.get(cb)
+    if (!Array.isArray(tables) || tables.length === 0 || tables.length > 5000) throw new Error(t('옮길 표를 골라 주세요'))
+    const list = tables.map(checkName)
+    const ob = checkObject(o)
+    const opts = { create: ob.create === true, truncate: ob.truncate === true, batch: checkInt(ob.batch ?? 500, 1, 5000), stopOnError: ob.stopOnError === true }
+    const da = checkName(adb) || la.defaultDb
+    const dbb = checkName(bdb) || lb.defaultDb
+    const sa = checkName(asch)
+    const sb = checkName(bsch)
+    if (ca === cb && da === dbb && sa === sb) throw new Error(t('원본과 대상이 같아요'))
+    const key = checkTabKey(tabKey)
+    transfers.add(key)
+    transferCancels.delete(key)
+    try {
+      const ss = await manager.editorSession(ca, key + '-src', da, sa)
+      const ds = await manager.editorSession(cb, key, dbb, sb)
+      return await transferData({ mod: la.mod, s: ss, db: da, schema: sa, o: metaOpts(ca) }, { mod: lb.mod, s: ds, db: dbb, schema: sb, o: metaOpts(cb) }, list, opts, () => transferCancels.has(key))
+    } finally {
+      transfers.delete(key)
+      transferCancels.delete(key)
+      await manager.closeEditor(key)
+      await manager.closeEditor(key + '-src')
+    }
+  },
+  erModel: async (id, db, schema) => {
+    const cid = checkConnId(id)
+    const live = manager.get(cid)
+    const d = checkName(db)
+    return erModel(live.mod, await live.metaSession(d), d, checkName(schema), metaOpts(cid))
+  },
+  saveImage: async (name, kind, data) => {
+    const k = checkOneOf(kind, ['png', 'svg'] as const)
+    const body = checkText(data, 80_000_000)
+    const file = await saveAs(t('그림 저장'), checkText(name, 200) + '.' + k, [{ name: k.toUpperCase(), extensions: [k] }])
+    if (!file) return null
+    fs.writeFileSync(file, k === 'png' ? Buffer.from(body, 'base64') : body)
+    return file
+  },
   serverSessions: async (id) => {
     const live = manager.get(checkConnId(id))
     if (!live.mod.sessions) throw new Error(t('SQLite에는 서버 세션이 없어요'))
@@ -465,7 +528,12 @@ const handlers: Handlers = {
       throw e
     }
   },
-  cancelSql: async (tabKey) => manager.cancel(checkTabKey(tabKey)),
+  cancelSql: async (tabKey) => {
+    const k = checkTabKey(tabKey)
+    if (transfers.has(k)) transferCancels.add(k)
+    await manager.cancel(k)
+    await manager.cancel(k + '-src')
+  },
   commitTx: async (tabKey) => {
     await (await manager.existingEditor(checkTabKey(tabKey)))?.endTransaction(true)
   },

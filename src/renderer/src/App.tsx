@@ -1,7 +1,9 @@
 // 앱 틀: 제목 줄(메뉴) · 옆 칸(탐색기·실행 기록 탭) · 편집 탭(SQL 편집기·표) · 상태 줄. 탭이 없으면 시작 화면
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Database, Eye, FileCode2, History, PanelLeftClose, PanelLeftOpen, Plus, SquareTerminal, Table2, X } from 'lucide-react'
+import {
+  Database, Eye, FileCode2, History, PanelLeftClose, PanelLeftOpen, Plus, SquareTerminal, Table2, X, Network,
+} from 'lucide-react'
 import { resolveLang, setLang, getLang, t } from './i18n'
 import { api, errorText, useSettings } from './api'
 import { UiProvider, useUi } from './ui'
@@ -14,6 +16,7 @@ import { TitleBar } from './components/TitleBar'
 import { StatusBar } from './components/StatusBar'
 import { EditorTabView } from './views/EditorTab'
 import { TableTabView } from './views/TableTab'
+import { ErView } from './views/ErView'
 import { Welcome } from './views/Welcome'
 import { SettingsDialog } from './dialogs/SettingsDialog'
 import { displayName } from '../../shared/dialect'
@@ -37,6 +40,7 @@ export default function App() {
 }
 
 export function tabTitle(tab: Tab): string {
+  if (tab.kind === 'er') return t('ER: {name}', { name: tab.focus ?? (tab.schema || tab.db) })
   return tab.kind === 'editor' ? tab.title : tab.newTable ? t('새 표') : displayName(tab.ref)
 }
 
@@ -182,7 +186,7 @@ function Shell() {
             {sideHidden && <button className="tab-side" title={t('옆 칸 보이기 (Ctrl+B)')} onClick={toggleSide}><PanelLeftOpen /></button>}
             {ws.tabs.map((tab) => {
               const c = ws.conn(tab.connId)
-              const Icon = tab.kind === 'editor' ? SquareTerminal : tab.objKind === 'view' ? Eye : Table2
+              const Icon = tab.kind === 'editor' ? SquareTerminal : tab.kind === 'er' ? Network : tab.objKind === 'view' ? Eye : Table2
               const on = ws.active === tab.id
               // 연결 색, 없고 운영 DB면 빨강
               const tint = c?.color || (c?.production ? '#e5484d' : '')
@@ -224,7 +228,7 @@ function Shell() {
             {showWelcome ? <Welcome actions={actions} /> : null}
             {ws.tabs.map((tab) => (
               <div key={tab.id} className="tab-pane" style={{ display: ws.active === tab.id ? 'flex' : 'none' }}>
-                {tab.kind === 'editor' ? <EditorTabView tab={tab} /> : <TableTabView tab={tab} active={ws.active === tab.id} />}
+                {tab.kind === 'editor' ? <EditorTabView tab={tab} /> : tab.kind === 'er' ? <ErView tab={tab} active={ws.active === tab.id} /> : <TableTabView tab={tab} active={ws.active === tab.id} />}
               </div>
             ))}
           </div>
