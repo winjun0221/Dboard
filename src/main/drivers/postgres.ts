@@ -349,6 +349,78 @@ export const postgresDriver: DriverModule = {
     return groupColumns(r.rows)
   },
 
+  async searchNames(s, db, like, o) {
+    const sys = o.showSystem ? 'true' : SYS_SCHEMA
+    const objs = await s.query(
+      `SELECT n.nspname, c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE ${sys} AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') AND c.relname ILIKE $1 ORDER BY 1, 2 LIMIT 1000`,
+      [like],
+    )
+    const cols = await s.query(
+      `SELECT n.nspname, c.relname, a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE ${sys} AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND a.attnum > 0 AND NOT a.attisdropped AND a.attname ILIKE $1 ORDER BY 1, 2, a.attnum LIMIT 1000`,
+      [like],
+    )
+    const fns = await s.query(
+      `SELECT n.nspname, p.proname, p.prokind FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE ${sys} AND p.prokind IN ('f', 'p') AND p.proname ILIKE $1 ORDER BY 1, 2 LIMIT 500`,
+      [like],
+    )
+    const kind = (k: string) => (k === 'v' || k === 'm' ? 'view' : k === 'S' ? 'sequence' : 'table') as 'view' | 'sequence' | 'table'
+    return [
+      ...objs.rows.map((x) => ({ db, schema: str(x[0]), kind: kind(str(x[2])), table: str(x[1]), name: str(x[1]), extra: '' })),
+      ...cols.rows.map((x) => ({ db, schema: str(x[0]), kind: 'column' as const, table: str(x[1]), name: str(x[2]), extra: str(x[3]) })),
+      ...fns.rows.map((x) => ({ db, schema: str(x[0]), kind: (str(x[2]) === 'p' ? 'procedure' : 'function') as 'procedure' | 'function', table: '', name: str(x[1]), extra: '' })),
+    ]
+  },
+
+  users: {
+    async list(s) {
+      const r = await s.query(`SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolvaliduntil::text FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY 1`)
+      return r.rows.map((x) => ({
+        name: str(x[0]),
+        host: '',
+        login: bool(x[1]),
+        superuser: bool(x[2]),
+        attrs: [bool(x[2]) && 'SUPERUSER', bool(x[3]) && 'CREATEDB', bool(x[4]) && 'CREATEROLE', bool(x[5]) && 'REPLICATION', x[6] ? `VALID UNTIL ${str(x[6])}` : ''].filter((v): v is string => !!v),
+      }))
+    },
+    async grants(s, name) {
+      const sup = await s.query('SELECT rolsuper FROM pg_roles WHERE rolname = $1', [name])
+      if (bool(sup.rows[0]?.[0])) return [t('슈퍼유저: 모든 권한')]
+      const member = await s.query('SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1 ORDER BY 1', [name])
+      const tables = await s.query(
+        `SELECT n.nspname || '.' || c.relname, array_to_string(ARRAY(SELECT p FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) AS p WHERE has_table_privilege($1, c.oid, p)), ', ')
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE ${SYS_SCHEMA} AND c.relkind IN ('r', 'p', 'v', 'm') ORDER BY 1 LIMIT 2000`,
+        [name],
+      )
+      return [
+        ...member.rows.map((x) => `MEMBER OF ${str(x[0])}`),
+        ...tables.rows.filter((x) => str(x[1])).map((x) => `${str(x[1])} ON ${str(x[0])}`),
+      ]
+    },
+  },
+
+  stats: async (s) => {
+    const r = await s.query(
+      `SELECT (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'),
+         (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND state = 'active'),
+         (SELECT count(*) FROM pg_locks WHERE NOT granted),
+         COALESCE(SUM(xact_commit + xact_rollback), 0)::float8, COALESCE(SUM(tup_returned + tup_fetched), 0)::float8,
+         COALESCE(SUM(tup_inserted + tup_updated + tup_deleted), 0)::float8, COALESCE(SUM(blks_hit), 0)::float8, COALESCE(SUM(blks_read), 0)::float8,
+         EXTRACT(EPOCH FROM now() - pg_postmaster_start_time())::bigint, pg_size_pretty(pg_database_size(current_database()))
+       FROM pg_stat_database`,
+    )
+    const x = r.rows[0] ?? []
+    const hit = Number(x[6])
+    const read = Number(x[7])
+    return {
+      gauges: { connections: Number(x[0]), active: Number(x[1]), lockWaits: Number(x[2]), cacheHit: hit + read > 0 ? Math.round((hit / (hit + read)) * 1000) / 10 : 100 },
+      counters: { transactions: Number(x[3]), rowsRead: Number(x[4]), rowsWritten: Number(x[5]) },
+      info: { uptime: str(x[8]), dbSize: str(x[9]) },
+    }
+  },
+
   sessions: {
     async list(s) {
       const r = await s.query(

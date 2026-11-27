@@ -4,7 +4,7 @@ import path from 'node:path'
 import { t } from '../shared/i18n'
 import {
   CSV_DELIMITERS, DRIVER_KINDS, EXPORT_FORMATS, type Cell, type ConnectionConfig, type CsvReadOptions, type CsvWriteOptions, type DataQuery, type ImportOptions,
-  type DumpObject, type DumpOptions, type RowChange, type SecretsInput, type SortKey, type TableRef,
+  type DumpObject, type DumpOptions, type RowChange, type SecretsInput, type SortKey, type TableRef, type UserAction,
 } from '../shared/types'
 
 export function checkDumpOptions(v: unknown): DumpOptions {
@@ -156,6 +156,7 @@ export function checkCsvRead(v: unknown): CsvReadOptions {
     delimiter: checkOneOf(o.delimiter, ['auto', ...CSV_DELIMITERS] as const),
     header: o.header !== false,
     encoding: checkOneOf(o.encoding, ['auto', 'utf8', 'euc-kr'] as const),
+    sheet: typeof o.sheet === 'number' && Number.isInteger(o.sheet) && o.sheet >= 0 && o.sheet < 1000 ? o.sheet : 0,
   }
 }
 
@@ -175,6 +176,19 @@ export function checkSecrets(v: unknown): SecretsInput {
 const COLOR = /^(#[0-9a-f]{6})?$/i
 
 /** 접속 정보: 모양을 맞추고 범위를 넘는 값은 고친다 */
+export function checkUserAction(v: unknown): UserAction {
+  const o = checkObject(v)
+  const kind = checkOneOf(o.kind, ['create', 'drop', 'password', 'grant', 'revoke'] as const)
+  const name = checkText(o.name ?? '', 128).trim()
+  const host = checkText(o.host ?? '', 255).trim()
+  if (kind === 'create') return { kind, name, host, password: checkText(o.password ?? '', 256), login: o.login !== false }
+  if (kind === 'drop') return { kind, name, host }
+  if (kind === 'password') return { kind, name, host, password: checkText(o.password ?? '', 256) }
+  if (!Array.isArray(o.privileges)) throw new Error(t('잘못된 요청'))
+  const privileges = o.privileges.map((p) => checkOneOf(p, ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'ALL'] as const))
+  return { kind, name, host, privileges, db: checkText(o.db ?? '', 512), schema: checkText(o.schema ?? '', 512), table: checkText(o.table ?? '', 512) }
+}
+
 export function checkConfig(v: unknown): ConnectionConfig {
   const o = checkObject(v)
   const ssh = checkObject(o.ssh ?? {})

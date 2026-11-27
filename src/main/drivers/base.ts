@@ -3,7 +3,8 @@
 import { beginSql } from '../../shared/dialect'
 import { firstKeyword, mask } from '../../shared/sql'
 import type {
-  Cell, ColumnInfo, ConnectionConfig, DatabaseList, DbObject, DesignForeignKey, DesignIndex, Dialect, ExtraKind, ExtraObject, FkAction, ServerSession, ForeignKeyInfo, IndexInfo, ObjectKind, ResultColumn, StatementResult, TableDesign, TableRef,
+  DbUser,
+  Cell, ColumnInfo, ConnectionConfig, DatabaseList, DbObject, DesignForeignKey, DesignIndex, Dialect, ExtraKind, ExtraObject, FkAction, SearchHit, ServerSession, ServerStats, ForeignKeyInfo, IndexInfo, ObjectKind, ResultColumn, StatementResult, TableDesign, TableRef,
 } from '../../shared/types'
 
 /** 사용자가 직접 쓴 트랜잭션 문장 (수동 커밋에서 감싸지 않고 그대로) */
@@ -196,6 +197,15 @@ export interface DriverModule {
   ddl(s: Session, ref: TableRef, kind: ObjectKind): Promise<string>
   foreignKeys(s: Session, ref: TableRef): Promise<ForeignKeyInfo[]>
   completion(s: Session, db: string, schema: string): Promise<Record<string, string[]>>
+  /** 이름 찾기 (DB 하나 안에서). like = '%글%' (\\로 % _ 가림) */
+  searchNames(s: Session, db: string, like: string, o: MetaOptions): Promise<SearchHit[]>
+  /** 사용자·권한 (SQLite는 null) */
+  users: null | {
+    list(s: Session): Promise<DbUser[]>
+    grants(s: Session, name: string, host: string, db: string): Promise<string[]>
+  }
+  /** 서버 상태 (SQLite는 null) */
+  stats: null | ((s: Session) => Promise<Omit<ServerStats, 'at'>>)
   /** 세션 관리자 (SQLite는 없음: null) */
   sessions: null | {
     list(s: Session): Promise<ServerSession[]>

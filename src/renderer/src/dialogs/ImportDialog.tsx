@@ -1,4 +1,4 @@
-// CSV 가져오기: 파일 고르기 → 읽는 방법(구분자·인코딩·머리글) → CSV 열마다 넣을 표의 열 → 한 트랜잭션으로 넣기
+// 가져오기 (CSV·엑셀·JSON): 파일 고르기 → 읽는 방법(CSV는 구분자·인코딩, 엑셀은 시트, 머리글) → 파일 열마다 넣을 표의 열 → 한 트랜잭션으로 넣기
 import { useEffect, useState } from 'react'
 import { FileUp, FolderOpen, LoaderCircle } from 'lucide-react'
 import type { CsvDelimiter, CsvEncoding, CsvPreview, CsvReadOptions, TableRef } from '../../../shared/types'
@@ -13,7 +13,7 @@ export function ImportDialog({ connId, target, onClose, onDone }: { connId: stri
   const ui = useUi()
   const cols = useColumns(connId, target, true)
   const [file, setFile] = useState<string | null>(null)
-  const [o, setO] = useState<CsvReadOptions>({ delimiter: 'auto', header: true, encoding: 'auto' })
+  const [o, setO] = useState<CsvReadOptions>({ delimiter: 'auto', header: true, encoding: 'auto', sheet: 0 })
   const [pv, setPv] = useState<CsvPreview | null>(null)
   const [busy, setBusy] = useState(false)
   const [mapping, setMapping] = useState<(string | null)[]>([])
@@ -51,7 +51,7 @@ export function ImportDialog({ connId, target, onClose, onDone }: { connId: stri
   const submit = async () => {
     if (!file || !pv) return
     try {
-      const n = await api.importCsv(connId, target, file, { ...o, delimiter: pv.delimiter, encoding: pv.encoding, mapping, emptyAsNull })
+      const n = await api.importCsv(connId, target, file, { ...o, delimiter: pv.format === 'csv' ? pv.delimiter : ',', encoding: pv.encoding, mapping, emptyAsNull })
       ui.notify(t('{n}행을 넣었어요', { n: fmtNum(n) }), 'success')
       onDone()
       onClose()
@@ -61,12 +61,20 @@ export function ImportDialog({ connId, target, onClose, onDone }: { connId: stri
   }
 
   return (
-    <Dialog title={t('{name}에 CSV 가져오기', { name: displayName(target) })} icon={FileUp} width={780} submitLabel={pv ? t('{n}행 넣기', { n: fmtNum(pv.total) }) : t('넣기')} disabled={!pv || used === 0 || busy} onClose={onClose} onSubmit={submit}>
+    <Dialog title={t('{name}에 가져오기 (CSV·엑셀·JSON)', { name: displayName(target) })} icon={FileUp} width={780} submitLabel={pv ? t('{n}행 넣기', { n: fmtNum(pv.total) }) : t('넣기')} disabled={!pv || used === 0 || busy} onClose={onClose} onSubmit={submit}>
       <div className="row-input">
-        <input readOnly value={file ?? ''} placeholder={t('CSV 파일을 고르세요')} className="mono" />
+        <input readOnly value={file ?? ''} placeholder={t('CSV·엑셀(xlsx)·JSON 파일을 고르세요')} className="mono" />
         <button type="button" className="btn" onClick={() => void pick()}><FolderOpen />{t('파일 고르기')}</button>
       </div>
       <div className="three">
+        {pv?.format === 'xlsx' && (
+          <Field label={t('시트')}>
+            <select value={o.sheet ?? 0} onChange={(e) => setO({ ...o, sheet: Number(e.target.value) })}>
+              {(pv.sheets ?? []).map((s, i) => <option key={i} value={i}>{s}</option>)}
+            </select>
+          </Field>
+        )}
+        {pv?.format !== 'xlsx' && pv?.format !== 'json' && (
         <Field label={t('구분자')}>
           <select value={o.delimiter} onChange={(e) => setO({ ...o, delimiter: e.target.value as CsvDelimiter | 'auto' })}>
             <option value="auto">{t('자동{found}', { found: pv && o.delimiter === 'auto' ? ` (${pv.delimiter === '\t' ? t('탭') : pv.delimiter})` : '' })}</option>
@@ -76,6 +84,8 @@ export function ImportDialog({ connId, target, onClose, onDone }: { connId: stri
             <option value="|">|</option>
           </select>
         </Field>
+        )}
+        {pv?.format !== 'xlsx' && pv?.format !== 'json' && (
         <Field label={t('인코딩')}>
           <select value={o.encoding} onChange={(e) => setO({ ...o, encoding: e.target.value as CsvEncoding | 'auto' })}>
             <option value="auto">{t('자동{found}', { found: pv && o.encoding === 'auto' ? ` (${pv.encoding === 'utf8' ? 'UTF-8' : 'EUC-KR'})` : '' })}</option>
@@ -83,6 +93,7 @@ export function ImportDialog({ connId, target, onClose, onDone }: { connId: stri
             <option value="euc-kr">{t('EUC-KR (한글 엑셀)')}</option>
           </select>
         </Field>
+        )}
         <div className="checks">
           <Check checked={o.header} onChange={(v) => setO({ ...o, header: v })}>{t('첫 줄은 열 이름')}</Check>
           <Check checked={emptyAsNull} onChange={setEmptyAsNull}>{t('빈칸은 NULL로')}</Check>
@@ -94,7 +105,7 @@ export function ImportDialog({ connId, target, onClose, onDone }: { connId: stri
           <table>
             <thead>
               <tr>
-                <th>{t('CSV 열')}</th>
+                <th>{t('파일 열')}</th>
                 <th>{t('넣을 열')}</th>
                 <th>{t('처음 값들')}</th>
               </tr>

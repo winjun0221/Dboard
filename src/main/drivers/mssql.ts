@@ -3,7 +3,7 @@ import { Connection, Request, TYPES } from 'tedious'
 import { quoteIdent } from '../../shared/dialect'
 import { t } from '../../shared/i18n'
 import { firstKeyword, splitSql } from '../../shared/sql'
-import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult, TableRef } from '../../shared/types'
+import type { Cell, ColumnInfo, DbObject, ResultColumn, SearchHit, StatementResult, TableRef } from '../../shared/types'
 import { formatUtc, toCell, toParam } from '../values'
 import { bool, elapsed, groupColumns, groupDesignFks, groupDesignIndexes, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
@@ -418,6 +418,69 @@ export const mssqlDriver: DriverModule = {
       [schema || 'dbo'],
     )
     return groupColumns(r.rows)
+  },
+
+  async searchNames(s, db, like) {
+    const objs = await s.query(
+      `SELECT sc.name, o.name, RTRIM(o.type), ISNULL(p.name, '') FROM ${sys(db, 'objects')} o JOIN ${sys(db, 'schemas')} sc ON sc.schema_id = o.schema_id
+       LEFT JOIN ${sys(db, 'objects')} p ON p.object_id = o.parent_object_id
+       WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'TR', 'SO') AND o.is_ms_shipped = 0 AND o.name LIKE @p1 ESCAPE '\\' ORDER BY 1, 2`,
+      [like],
+    )
+    const cols = await s.query(
+      `SELECT TOP 1000 sc.name, o.name, c.name, t.name FROM ${sys(db, 'columns')} c JOIN ${sys(db, 'objects')} o ON o.object_id = c.object_id
+       JOIN ${sys(db, 'schemas')} sc ON sc.schema_id = o.schema_id JOIN ${sys(db, 'types')} t ON t.user_type_id = c.user_type_id
+       WHERE o.type IN ('U', 'V') AND o.is_ms_shipped = 0 AND c.name LIKE @p1 ESCAPE '\\' ORDER BY 1, 2, c.column_id`,
+      [like],
+    )
+    const kind = (k: string) => ({ U: 'table', V: 'view', P: 'procedure', TR: 'trigger', SO: 'sequence' } as Record<string, string>)[k] ?? 'function'
+    return [
+      ...objs.rows.map((x) => ({ db, schema: str(x[0]), kind: kind(str(x[2])) as SearchHit['kind'], table: str(x[2]) === 'TR' ? str(x[3]) : str(x[1]), name: str(x[1]), extra: '' })),
+      ...cols.rows.map((x) => ({ db, schema: str(x[0]), kind: 'column' as const, table: str(x[1]), name: str(x[2]), extra: str(x[3]) })),
+    ]
+  },
+
+  users: {
+    async list(s) {
+      const r = await s.query(
+        `SELECT name, type_desc, is_disabled, IS_SRVROLEMEMBER('sysadmin', name) FROM sys.server_principals WHERE type IN ('S', 'U', 'G') AND name NOT LIKE '##%' ORDER BY name`,
+      )
+      return r.rows.map((x) => ({ name: str(x[0]), host: '', login: !bool(x[2]), superuser: Number(x[3]) === 1, attrs: [str(x[1]), Number(x[3]) === 1 ? 'sysadmin' : '', bool(x[2]) ? 'DISABLED' : ''].filter(Boolean) }))
+    },
+    async grants(s, name, _host, db) {
+      const perms = await s.query(
+        // 정렬 규칙이 다른 글을 SQL에서 이으면 오류가 나서 조각으로 받아 여기서 잇는다
+        `SELECT p.state_desc, p.permission_name, p.class, os.name, o.name, sc.name, p.class_desc
+         FROM ${sys(db, 'database_permissions')} p JOIN ${sys(db, 'database_principals')} u ON u.principal_id = p.grantee_principal_id
+         LEFT JOIN ${sys(db, 'objects')} o ON p.class = 1 AND o.object_id = p.major_id LEFT JOIN ${sys(db, 'schemas')} os ON os.schema_id = o.schema_id
+         LEFT JOIN ${sys(db, 'schemas')} sc ON p.class = 3 AND sc.schema_id = p.major_id
+         WHERE u.sid = SUSER_SID(@p1)`,
+        [name],
+      )
+      const on = (x: Cell[]) => (Number(x[2]) === 0 ? 'DATABASE' : Number(x[2]) === 1 ? `${str(x[3]) || '?'}.${str(x[4]) || '?'}` : Number(x[2]) === 3 ? `SCHEMA::${str(x[5]) || '?'}` : str(x[6]))
+      const lines = perms.rows.map((x) => `${str(x[0])} ${str(x[1])} ON ${on(x)}`).sort()
+      const roles = await s.query(
+        `SELECT r.name FROM ${sys(db, 'database_role_members')} m JOIN ${sys(db, 'database_principals')} r ON r.principal_id = m.role_principal_id
+         JOIN ${sys(db, 'database_principals')} u ON u.principal_id = m.member_principal_id WHERE u.sid = SUSER_SID(@p1) ORDER BY 1`,
+        [name],
+      )
+      return [...roles.rows.map((x) => `MEMBER OF ${str(x[0])}`), ...lines]
+    },
+  },
+
+  stats: async (s) => {
+    const r = await s.query(
+      `SELECT RTRIM(counter_name), RTRIM(instance_name), CAST(cntr_value AS float) FROM sys.dm_os_performance_counters
+       WHERE counter_name IN ('Batch Requests/sec', 'User Connections', 'Transactions/sec', 'Lock Waits/sec', 'Processes blocked', 'Page life expectancy')`,
+    )
+    const pick = (name: string, inst = '') => Number(r.rows.find((x) => str(x[0]) === name && (!inst || str(x[1]) === inst))?.[2] ?? 0)
+    const act = await s.query(`SELECT COUNT(*) FROM sys.dm_exec_requests WHERE session_id <> @@SPID AND status IN ('running', 'runnable', 'suspended') AND session_id > 50`)
+    const up = await s.query('SELECT DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) FROM sys.dm_os_sys_info').catch(() => ({ rows: [[null]] as Cell[][] }))
+    return {
+      gauges: { connections: pick('User Connections'), active: Number(act.rows[0]?.[0] ?? 0), lockWaits: pick('Processes blocked') },
+      counters: { queries: pick('Batch Requests/sec'), transactions: pick('Transactions/sec', '_Total'), lockWaitEvents: pick('Lock Waits/sec', '_Total') },
+      info: { uptime: str(up.rows[0]?.[0]) },
+    }
   },
 
   sessions: {

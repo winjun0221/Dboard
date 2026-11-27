@@ -298,9 +298,15 @@ export interface CsvReadOptions {
   delimiter: CsvDelimiter | 'auto'
   header: boolean
   encoding: CsvEncoding | 'auto'
+  /** 엑셀 시트 (0부터) */
+  sheet?: number
 }
 
 export interface CsvPreview {
+  /** 파일 종류 (확장자로): CSV · 엑셀 · JSON */
+  format: 'csv' | 'xlsx' | 'json'
+  /** 엑셀 시트 이름들 */
+  sheets?: string[]
   path: string
   name: string
   encoding: CsvEncoding
@@ -415,6 +421,56 @@ export interface TransferResult {
   tables: { name: string; rows: number; created: boolean; error: string | null }[]
   ms: number
 }
+
+// ───────── 전체 검색 ─────────
+
+export type SearchKind = 'table' | 'view' | 'column' | ExtraKind
+
+/** 이름 찾기 결과: column이면 table이 그 열의 표 */
+export interface SearchHit {
+  db: string
+  schema: string
+  kind: SearchKind
+  table: string
+  name: string
+  /** 열 타입 등 */
+  extra: string
+}
+
+/** 데이터 찾기 결과: 그 값이 들어 있는 행 수 */
+export interface DataHit {
+  table: string
+  columns: string[]
+  count: number
+  error: string | null
+}
+
+// ───────── 서버 상태 ─────────
+
+/** gauges: 지금 값(연결 수 등), counters: 쌓이는 값(쿼리 수 등 — 화면이 차이로 초당 값을 낸다), info: 글 */
+export interface ServerStats {
+  at: number
+  gauges: Record<string, number>
+  counters: Record<string, number>
+  info: Record<string, string>
+}
+
+// ───────── 사용자·권한 ─────────
+
+export interface DbUser {
+  name: string
+  /** MySQL 접속할 수 있는 곳 (그 밖에는 '') */
+  host: string
+  login: boolean
+  superuser: boolean
+  attrs: string[]
+}
+
+export type UserAction =
+  | { kind: 'create'; name: string; host: string; password: string; login: boolean }
+  | { kind: 'drop'; name: string; host: string }
+  | { kind: 'password'; name: string; host: string; password: string }
+  | { kind: 'grant' | 'revoke'; name: string; host: string; privileges: string[]; db: string; schema: string; table: string }
 
 // ───────── 세션 관리자 ─────────
 
@@ -538,6 +594,16 @@ export interface Api {
   erModel(connId: string, db: string, schema: string): Promise<ErModel>
   /** 그림 저장 (svg = SVG 글, png = base64) */
   saveImage(defaultName: string, kind: 'png' | 'svg', data: string): Promise<string | null>
+  /** 이름 찾기: 표·뷰·열·프로시저 등 (allDbs면 접속의 모든 DB, 아니면 db만) */
+  searchNames(connId: string, text: string, allDbs: boolean, db: string): Promise<SearchHit[]>
+  /** 데이터 찾기: 스키마(DB)의 표마다 글 열에 그 값이 든 행 수. tabKey로 취소 */
+  searchData(connId: string, db: string, schema: string, text: string, tabKey: string): Promise<DataHit[]>
+  /** 사용자·권한: 목록, 한 사용자의 권한 줄들(db 안에서), 바꾸기(비밀번호는 기록에 남기지 않음) */
+  users(connId: string): Promise<DbUser[]>
+  userGrants(connId: string, name: string, host: string, db: string): Promise<string[]>
+  runUserAction(connId: string, db: string, schema: string, action: UserAction): Promise<void>
+  /** 서버 상태 한 번 읽기 (SQLite는 없음) */
+  serverStats(connId: string): Promise<ServerStats>
   /** 세션 관리자: 서버의 연결 목록, 쿼리 취소(queryOnly) 또는 연결 끊기 */
   serverSessions(connId: string): Promise<ServerSession[]>
   killSession(connId: string, sessionId: string, queryOnly: boolean): Promise<void>
@@ -604,7 +670,7 @@ export interface Api {
 export const API_METHODS = [
   'listConnections', 'saveConnection', 'deleteConnection', 'duplicateConnection', 'moveConnection', 'setConnectionFolder', 'exportConnections', 'importConnections', 'testConnection', 'connect',
   'disconnect', 'connectedIds', 'pickSqliteFile', 'pickKeyFile', 'forgetHostKey',
-  'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion', 'extraObjects', 'objectSource', 'serverSessions', 'killSession', 'erModel', 'saveImage', 'compareSchemas', 'transferData', 'tableDesign', 'runDdl',
+  'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion', 'extraObjects', 'objectSource', 'serverSessions', 'killSession', 'erModel', 'saveImage', 'searchNames', 'searchData', 'serverStats', 'users', 'userGrants', 'runUserAction', 'compareSchemas', 'transferData', 'tableDesign', 'runDdl',
   'runSql', 'cancelSql', 'commitTx', 'rollbackTx', 'explain', 'foreignKeys', 'cellValue', 'saveCellValue', 'closeSession', 'history', 'clearHistory',
   'tableData', 'countRows', 'applyChanges',
   'saveCsv', 'exportQueryCsv', 'exportTableCsv', 'pickCsv', 'previewCsv', 'importCsv', 'exportDump', 'pickSqlFile', 'runSqlFile',

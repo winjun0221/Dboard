@@ -258,6 +258,40 @@ export const mysqlDriver: DriverModule = {
     return groupColumns(r.rows)
   },
 
+  async searchNames(s, db, like) {
+    const objs = await s.query("SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME LIKE ? ORDER BY TABLE_NAME LIMIT 1000", [db, like])
+    const cols = await s.query('SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND COLUMN_NAME LIKE ? ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 1000', [db, like])
+    const rts = await s.query('SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME LIKE ? LIMIT 500', [db, like])
+    const trs = await s.query('SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME LIKE ? LIMIT 500', [db, like])
+    return [
+      ...objs.rows.map((x) => ({ db, schema: '', kind: (/VIEW/i.test(str(x[1])) ? 'view' : 'table') as 'view' | 'table', table: str(x[0]), name: str(x[0]), extra: '' })),
+      ...cols.rows.map((x) => ({ db, schema: '', kind: 'column' as const, table: str(x[0]), name: str(x[1]), extra: str(x[2]) })),
+      ...rts.rows.map((x) => ({ db, schema: '', kind: (str(x[1]).toUpperCase() === 'PROCEDURE' ? 'procedure' : 'function') as 'procedure' | 'function', table: '', name: str(x[0]), extra: '' })),
+      ...trs.rows.map((x) => ({ db, schema: '', kind: 'trigger' as const, table: str(x[1]), name: str(x[0]), extra: '' })),
+    ]
+  },
+
+  users: {
+    async list(s) {
+      const r = await s.query('SELECT User, Host, Super_priv FROM mysql.user ORDER BY User, Host')
+      return r.rows.map((x) => ({ name: str(x[0]), host: str(x[1]), login: true, superuser: str(x[2]) === 'Y', attrs: str(x[2]) === 'Y' ? ['SUPER'] : [] }))
+    },
+    async grants(s, name, host) {
+      const r = await s.query('SHOW GRANTS FOR ?@?', [name, host || '%'])
+      return r.rows.map((x) => str(x[0]))
+    },
+  },
+
+  stats: async (s) => {
+    const r = await s.query(`SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Threads_running', 'Questions', 'Com_commit', 'Com_rollback', 'Bytes_received', 'Bytes_sent', 'Uptime', 'Innodb_row_lock_current_waits', 'Innodb_rows_read', 'Slow_queries')`)
+    const v = Object.fromEntries(r.rows.map((x) => [str(x[0]).toLowerCase(), Number(x[1])]))
+    return {
+      gauges: { connections: v.threads_connected ?? 0, active: v.threads_running ?? 0, lockWaits: v.innodb_row_lock_current_waits ?? 0 },
+      counters: { queries: v.questions ?? 0, transactions: (v.com_commit ?? 0) + (v.com_rollback ?? 0), rowsRead: v.innodb_rows_read ?? 0, bytesIn: v.bytes_received ?? 0, bytesOut: v.bytes_sent ?? 0, slowQueries: v.slow_queries ?? 0 },
+      info: { uptime: String(v.uptime ?? '') },
+    }
+  },
+
   sessions: {
     async list(s) {
       const own = Number((await s.query('SELECT CONNECTION_ID()')).rows[0]?.[0])

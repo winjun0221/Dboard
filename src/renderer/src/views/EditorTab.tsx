@@ -17,6 +17,7 @@ import { t, tx } from '../i18n'
 import { fmtNum, formatMs } from '../format'
 import { SqlEditor, type NameInfo, type SqlEditorHandle } from '../components/SqlEditor'
 import { ResultView } from '../components/ResultView'
+import { PlanGraph, parsePlan } from '../components/PlanGraph'
 import { Splitter, usePaneSize, clamp } from '../components/Splitter'
 import { DriverBadge } from '../components/DriverBadge'
 import { registerActions, registerEditor, type EditorActions } from '../editors'
@@ -66,6 +67,7 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
   const [runs, setRuns] = useState<RunItem[]>([])
   const [view, setView] = useState<number | 'log' | 'plan'>('log')
   const [plan, setPlan] = useState<{ sql: string; result?: ExplainResult; error?: string } | null>(null)
+  const [planAsText, setPlanAsText] = useState(false)
   /** 수동 커밋에서 아직 커밋하지 않은 (데이터를 바꾸는) 문장 수 */
   const [pending, setPending] = useState(0)
   const manual = tab.manual ?? conn?.production === true
@@ -152,6 +154,8 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
       const r = await api.saveSqlFile(as ? null : tab.file ?? null, text, tab.title)
       if (!r) return
       ws.updateTab(tab.id, { file: r.path, title: r.name, modified: false })
+      // 바로 닫아도 묻지 않게 (효과가 돌기 전에 Ctrl+W가 올 수 있다)
+      setDirty(tab.id, pending > 0)
       void qc.invalidateQueries({ queryKey: ['scripts'] })
       ui.notify(t('저장했어요: {name}', { name: r.name }), 'success')
     } catch (e) {
@@ -466,7 +470,10 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
             placeholder={t('SQL을 입력하세요. Ctrl+Enter로 실행, Ctrl+Space로 자동 완성')}
             onChange={(text) => {
               saveText(tab.id, text)
-              if (tab.file && !tab.modified) ws.updateTab(tab.id, { modified: true })
+              if (tab.file && !tab.modified) {
+                ws.updateTab(tab.id, { modified: true })
+                setDirty(tab.id, true)
+              }
             }}
             onSave={(as) => void saveFile(as)}
             onOpenName={openName}
@@ -498,8 +505,17 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
           </div>
           {view === 'plan' && plan ? (
             <div className="plan-view">
-              <code className="plan-sql ellipsis">{plan.sql.replace(/\s+/g, ' ').slice(0, 300)}</code>
+              <div className="plan-head">
+                <code className="plan-sql ellipsis">{plan.sql.replace(/\s+/g, ' ').slice(0, 300)}</code>
+                {plan.result?.text && (
+                  <div className="seg">
+                    <button type="button" className={!planAsText ? 'on' : ''} onClick={() => setPlanAsText(false)}>{t('그림')}</button>
+                    <button type="button" className={planAsText ? 'on' : ''} onClick={() => setPlanAsText(true)}>{t('글')}</button>
+                  </div>
+                )}
+              </div>
               {plan.error ? <pre className="log-error plan-error">{plan.error}</pre>
+                : plan.result?.text && !planAsText && parsePlan(plan.result.text, d).length > 0 ? <PlanGraph roots={parsePlan(plan.result.text, d)} />
                 : plan.result?.text !== null && plan.result?.text !== undefined ? <pre className="plan-text">{plan.result.text || t('(계획이 비어 있어요)')}</pre>
                   : plan.result?.result ? <ResultView result={plan.result.result} name={conn.name} dialect={d} fetchAll={null} exportAll={null} /> : null}
             </div>

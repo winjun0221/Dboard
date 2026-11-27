@@ -2,7 +2,7 @@
 import { useRef, useState, type MouseEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database, FolderOpen, Save, Activity, FileCode2, Download, Upload, GitCompareArrows, ArrowRightLeft,
+  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database, FolderOpen, Save, Activity, FileCode2, Download, Upload, GitCompareArrows, ArrowRightLeft, FileSearch, Gauge, Users,
 } from 'lucide-react'
 import type { AppSettings } from '../../../shared/types'
 import { api, errorText } from '../api'
@@ -18,6 +18,7 @@ import { RunFileDialog } from '../dialogs/RunFileDialog'
 import { SessionsDialog } from '../dialogs/SessionsDialog'
 import { CompareDialog } from '../dialogs/CompareDialog'
 import { TransferDialog } from '../dialogs/TransferDialog'
+import { useServerTools } from './Navigator'
 
 type MenuName = 'file' | 'view' | 'sql' | 'help'
 
@@ -25,6 +26,7 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
   const ws = useWs()
   const ui = useUi()
   const qc = useQueryClient()
+  const tools = useServerTools()
   const [open, setOpen] = useState<MenuName | null>(null)
   const openRef = useRef<MenuName | null>(null)
   openRef.current = open
@@ -125,6 +127,9 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
           { label: t('밝게'), checked: ws.settings.theme === 'light', onClick: () => void setTheme('light') },
           { label: t('어둡게'), checked: ws.settings.theme === 'dark', onClick: () => void setTheme('dark') },
           'sep',
+          { label: t('전체 검색…'), icon: FileSearch, disabled: !here, onClick: () => void withConn((h) => tools.search(ws.conn(h.connId)!, h.db, h.schema)) },
+          { label: t('서버 상태…'), icon: Gauge, disabled: !here || ws.conn(here.connId)?.driver === 'sqlite', onClick: () => void withConn((h) => void tools.stats(ws.conn(h.connId)!)) },
+          { label: t('사용자·권한…'), icon: Users, disabled: !here || ws.conn(here.connId)?.driver === 'sqlite', onClick: () => void withConn((h) => void tools.users(ws.conn(h.connId)!, h.db, h.schema)) },
           { label: t('세션 관리자…'), icon: Activity, disabled: !here || ws.conn(here.connId)?.driver === 'sqlite', onClick: () => void withConn((h) => ui.open((close) => <SessionsDialog conn={ws.conn(h.connId)!} onClose={close} />)) },
         ]
       case 'sql':

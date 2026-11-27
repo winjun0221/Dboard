@@ -237,6 +237,20 @@ export const sqliteDriver: DriverModule = {
   },
 
   sessions: null,
+  stats: null,
+  users: null,
+
+  async searchNames(s, db, like) {
+    const objs = await s.query(`SELECT type, name, tbl_name FROM ${q(db)}.sqlite_master WHERE type IN ('table', 'view', 'trigger') AND name LIKE ? ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name LIMIT 1000`, [like])
+    const cols = await s.query(
+      `SELECT m.name, p.name, p.type FROM ${q(db)}.sqlite_master m JOIN pragma_table_info(m.name, ?) p WHERE m.type IN ('table', 'view') AND p.name LIKE ? ESCAPE '\\' ORDER BY m.name, p.cid LIMIT 1000`,
+      [db, like],
+    )
+    return [
+      ...objs.rows.map((x) => ({ db, schema: '', kind: str(x[0]) as 'table' | 'view' | 'trigger', table: str(x[0]) === 'trigger' ? str(x[2]) : str(x[1]), name: str(x[1]), extra: '' })),
+      ...cols.rows.map((x) => ({ db, schema: '', kind: 'column' as const, table: str(x[0]), name: str(x[1]), extra: str(x[2]) })),
+    ]
+  },
 
   async extras(s, db) {
     const r = await s.query(`SELECT name, tbl_name FROM ${q(db)}.sqlite_master WHERE type = 'trigger' ORDER BY name`)

@@ -1,5 +1,7 @@
 // 표 데이터 보기·고치기, CSV 내보내기·가져오기 (Electron 없이 — 테스트에서 그대로 쓴다)
 import fs from 'node:fs'
+import path from 'node:path'
+import { readJson, readXlsx } from './tabular'
 import { countSql, selectAll, selectPage } from '../shared/dialect'
 import { buildChange, buildInsertMany, selectCell } from '../shared/edit'
 import { decodeText, detectDelimiter, detectEncoding, parseCsv } from '../shared/csv'
@@ -116,9 +118,15 @@ export async function exportTable(live: Live, ref: TableRef, filter: string, ord
 
 const MAX_CSV = 512 * 1024 * 1024
 
+/** 가져올 파일 읽기: 확장자로 엑셀(xlsx)·JSON·CSV */
 function readCsv(file: string, o: CsvReadOptions) {
   const size = fs.statSync(file).size
   if (size > MAX_CSV) throw new Error(t('CSV 파일이 너무 커요 (512MB까지)'))
+  const ext = path.extname(file).toLowerCase()
+  if (ext === '.xlsx' || ext === '.json') {
+    const r = ext === '.xlsx' ? readXlsx(fs.readFileSync(file), o.sheet ?? 0, o.header) : readJson(fs.readFileSync(file), o.header)
+    return { format: ext.slice(1) as 'xlsx' | 'json', sheets: r.sheets, encoding: 'utf8' as const, delimiter: ',' as const, headers: r.headers, rows: r.rows }
+  }
   const bytes = fs.readFileSync(file)
   const encoding = o.encoding === 'auto' ? detectEncoding(bytes) : o.encoding
   const text = decodeText(bytes, encoding)
@@ -127,12 +135,13 @@ function readCsv(file: string, o: CsvReadOptions) {
   const width = Math.max(0, ...all.slice(0, 1000).map((r) => r.length))
   const headers = o.header && all.length ? all[0] : Array.from({ length: width }, (_, i) => t('열 {n}', { n: i + 1 }))
   const rows = o.header ? all.slice(1) : all
-  return { encoding, delimiter, headers, rows }
+  return { format: 'csv' as const, sheets: undefined, encoding, delimiter, headers, rows }
 }
 
 export function previewCsv(file: string, o: CsvReadOptions, name: string): CsvPreview {
   const r = readCsv(file, o)
-  return { path: file, name, encoding: r.encoding, delimiter: r.delimiter, headers: r.headers, rows: r.rows.slice(0, 50), total: r.rows.length }
+  r.rows = r.rows.filter((row) => row.some((v) => v !== ''))
+  return { format: r.format, ...(r.sheets ? { sheets: r.sheets } : {}), path: file, name, encoding: r.encoding, delimiter: r.delimiter, headers: r.headers, rows: r.rows.slice(0, 50), total: r.rows.length }
 }
 
 export async function importCsv(live: Live, ref: TableRef, file: string, o: ImportOptions): Promise<number> {
@@ -145,7 +154,7 @@ export async function importCsv(live: Live, ref: TableRef, file: string, o: Impo
     seen.add(p.col)
   }
   const rows: Cell[][] = r.rows
-    .filter((row) => !(row.length === 1 && row[0] === ''))
+    .filter((row) => row.some((v) => v !== '')) // 빈 줄(엑셀의 빈 행 포함)은 건너뛴다
     .map((row) => picks.map((p) => {
       const v = row[p.i] ?? ''
       return o.emptyAsNull && v === '' ? null : v

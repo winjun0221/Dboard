@@ -12,12 +12,14 @@ import { Manager, type Resolved } from './conn'
 import { setSqliteWorkerCode } from './drivers/sqlite'
 import {
   allowFile, checkBool, checkCell, checkChanges, checkConfig, checkCsvRead, checkCsvWrite, checkDataQuery, checkDumpObjects, checkDumpOptions, checkId, checkImport, checkInt,
-  checkName, checkObject, checkOneOf, checkPickedFile, checkRef, checkSecrets, checkSort, checkSql, checkTabKey, checkText, validateForConnect,
+  checkName, checkObject, checkOneOf, checkPickedFile, checkRef, checkSecrets, checkSort, checkSql, checkTabKey, checkText, checkUserAction, validateForConnect,
 } from './guard'
 import * as dump from './dump'
 import { compareSchemas } from './compare'
 import { erModel } from './er'
 import { transferData } from './transfer'
+import * as search from './search'
+import { userSql } from '../shared/users'
 import { explain } from './explain'
 import { EXTENSIONS } from './export'
 import * as ops from './ops'
@@ -168,7 +170,7 @@ async function saveAs(title: string, defaultName: string, filters: Electron.File
   return r.canceled || !r.filePath ? null : r.filePath
 }
 
-const CSV_FILTER = [{ name: 'CSV', extensions: ['csv', 'txt', 'tsv'] }]
+const CSV_FILTER = [{ name: 'CSV · Excel · JSON', extensions: ['csv', 'txt', 'tsv', 'xlsx', 'json'] }]
 const EXPORT_FILTERS: Record<string, Electron.FileFilter[]> = {
   csv: CSV_FILTER,
   xlsx: [{ name: 'Excel', extensions: ['xlsx'] }],
@@ -443,6 +445,74 @@ const handlers: Handlers = {
       await manager.closeEditor(key)
       await manager.closeEditor(key + '-src')
     }
+  },
+  searchNames: async (id, text, allDbs, db) => {
+    const cid = checkConnId(id)
+    const live = manager.get(cid)
+    const q = checkText(text, 200).trim()
+    if (!q) return []
+    const dbs = checkBool(allDbs) ? (await live.mod.databases(await live.metaSession(), metaOpts(cid))).databases.slice(0, 100) : [checkName(db) || live.defaultDb]
+    return search.searchNames(live.mod, (d) => live.metaSession(d), dbs, q, metaOpts(cid))
+  },
+  searchData: async (id, db, schema, text, tabKey) => {
+    const cid = checkConnId(id)
+    const live = manager.get(cid)
+    const q = checkText(text, 200).trim()
+    if (!q) return []
+    const key = checkTabKey(tabKey)
+    const d = checkName(db) || live.defaultDb
+    const sc = checkName(schema)
+    transfers.add(key)
+    transferCancels.delete(key)
+    try {
+      const s = await manager.editorSession(cid, key, d, sc)
+      return await search.searchData(live.mod, s, d, sc, q, metaOpts(cid), () => transferCancels.has(key))
+    } finally {
+      transfers.delete(key)
+      transferCancels.delete(key)
+      await manager.closeEditor(key)
+    }
+  },
+  users: async (id) => {
+    const live = manager.get(checkConnId(id))
+    if (!live.mod.users) throw new Error(t('SQLite에는 사용자가 없어요'))
+    return live.mod.users.list(await live.metaSession())
+  },
+  userGrants: async (id, name, host, db) => {
+    const live = manager.get(checkConnId(id))
+    if (!live.mod.users) throw new Error(t('SQLite에는 사용자가 없어요'))
+    const d = checkName(db) || live.defaultDb
+    return live.mod.users.grants(await live.metaSession(d), checkName(name), checkText(host ?? '', 255), d)
+  },
+  runUserAction: async (id, db, schema, action) => {
+    const cid = checkConnId(id)
+    checkWritable(cid, t('사용자를 바꿀'))
+    const live = manager.get(cid)
+    const a = checkUserAction(action)
+    const list = userSql(live.mod.dialect, a, false)
+    const shown = userSql(live.mod.dialect, a, true)
+    const secret = 'password' in a ? a.password : ''
+    const hide = (m: string) => (secret ? m.split(secret).join('********') : m)
+    const d = checkName(db) || live.defaultDb
+    const key = `usr-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
+    const base = { at: Date.now(), connId: cid, connName: live.config.name, db: d, sql: shown.join(';\n') + ';' }
+    const t0 = performance.now()
+    try {
+      await dump.runStatements(await manager.editorSession(cid, key, d, checkName(schema)), live.mod.dialect, list)
+      store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows: null, error: null })
+    } catch (e) {
+      // 오류 글에 비밀번호가 섞이지 않게
+      const msg = hide(e instanceof Error ? e.message : String(e))
+      store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows: null, error: msg })
+      throw new Error(msg)
+    } finally {
+      await manager.closeEditor(key)
+    }
+  },
+  serverStats: async (id) => {
+    const live = manager.get(checkConnId(id))
+    if (!live.mod.stats) throw new Error(t('SQLite에는 서버 상태가 없어요'))
+    return { at: Date.now(), ...(await live.mod.stats(await live.metaSession())) }
   },
   erModel: async (id, db, schema) => {
     const cid = checkConnId(id)

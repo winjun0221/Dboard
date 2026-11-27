@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import iconv from 'iconv-lite'
+import { strToU8, zipSync } from 'fflate'
 import { makeSampleDb } from './sample-db.mjs'
 
 const out = path.resolve(process.env.E2E_OUT || path.join(os.tmpdir(), 'dboard-e2e'))
@@ -357,7 +358,7 @@ try {
   await win.keyboard.press('Control+Shift+F')
   check('format SQL (Ctrl+Shift+F)', await until(async () => /^SELECT\s*\n/.test((await edText()).trim()) && (await edText()).includes('ORDER BY')), JSON.stringify((await edText()).slice(0, 80)))
   await win.keyboard.press('Control+Shift+E')
-  check('explain plan (Ctrl+Shift+E)', await until(async () => /SCAN|SEARCH/.test(await ed.locator('.plan-text').innerText().catch(() => ''))), await ed.locator('.plan-view').innerText().catch(() => ''))
+  check('explain plan (Ctrl+Shift+E)', await until(async () => /SCAN|SEARCH/.test(await ed.locator('.plan-view').innerText().catch(() => ''))), await ed.locator('.plan-view').innerText().catch(() => ''))
   await ed.locator('.cm-content').click()
   await win.keyboard.press('Control+a')
   await win.keyboard.insertText('CREATE TABLE tx_test (v TEXT)')
@@ -769,7 +770,68 @@ try {
   check('transfer: result shown', await until(async () => (await win.locator('.dialog .transfer-row .ok').count()) === 1))
   await win.keyboard.press('Escape')
 
-  if (process.env.DBOARD_E2E_SERVERS === '1') await servers(win, submit)
+  // ── 엑셀 가져오기 · 실행 계획 그림 · 전체 검색 ──
+  const xf = path.join(out, 'notes.xlsx')
+  fs.writeFileSync(xf, zipSync({
+    'xl/workbook.xml': strToU8('<workbook><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+    'xl/_rels/workbook.xml.rels': strToU8('<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>'),
+    'xl/worksheets/sheet1.xml': strToU8('<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>author</t></is></c><c r="B1" t="inlineStr"><is><t>body</t></is></c></row>'
+      + '<row r="2"><c r="A2" t="inlineStr"><is><t>엑셀</t></is></c><c r="B2" t="inlineStr"><is><t>xlsx row 1</t></is></c></row>'
+      + '<row r="3"><c r="A3" t="inlineStr"><is><t>엑셀</t></is></c><c r="B3"><v>42</v></c></row></sheetData></worksheet>'),
+  }))
+  const notesBefore = sql('SELECT COUNT(*) AS n FROM notes')[0].n
+  await nextDialog('open', xf)
+  await menu(win.locator('.tree-row', { hasText: /^notes$/ }).first(), '가져오기 (CSV·엑셀·JSON)…')
+  await win.waitForSelector('.dialog .import-map')
+  check('import xlsx: columns matched by name', (await win.locator('.dialog .import-map select').first().inputValue()) === 'author')
+  await submit()
+  check('import xlsx: rows inserted', await until(() => sql('SELECT COUNT(*) AS n FROM notes')[0].n === notesBefore + 2 && sql("SELECT body FROM notes WHERE author = '엑셀' ORDER BY rowid")[1]?.body === '42'))
+
+  await menu(win.locator('.tree-row.conn-row', { hasText: 'shop' }), '새 SQL 편집기')
+  await win.waitForSelector('.tab-pane:visible .cm-content')
+  await win.locator('.tab-pane:visible .cm-content').click()
+  await win.keyboard.insertText('SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id WHERE c.id = 1')
+  await win.keyboard.press('Control+Shift+E')
+  check('plan: drawn as a tree', await until(async () => (await win.locator('.tab-pane:visible .plan-graph .plan-node').count()) >= 2))
+  await shot(win, '19-plan.png')
+  await win.locator('.tab-pane:visible .plan-head .seg button', { hasText: '글' }).click()
+  check('plan: text view', await until(async () => (await win.locator('.tab-pane:visible .plan-text').count()) === 1))
+  await win.keyboard.press('Control+w')
+
+  await menu(mainRow, '전체 검색…')
+  await win.waitForSelector('.dialog .search-bar')
+  await win.locator('.dialog .search-bar input').fill('custom')
+  await win.keyboard.press('Enter')
+  check('search: finds tables and columns', await until(async () => {
+    const txt = await win.locator('.dialog .search-results').innerText()
+    return txt.includes('customers') && txt.includes('customer_id')
+  }))
+  await shot(win, '20-search.png')
+  await win.locator('.dialog .search-modes button', { hasText: '데이터' }).click()
+  const who = sql('SELECT name FROM customers WHERE name IS NOT NULL ORDER BY id LIMIT 1')[0].name
+  await win.locator('.dialog .search-bar input').fill(who)
+  await win.keyboard.press('Enter')
+  const dataHit = win.locator('.dialog .search-row', { hasText: 'customers' })
+  check('search: finds data', await until(async () => (await dataHit.count()) === 1), who)
+  await dataHit.click()
+  check('search: opens the table filtered', await until(async () => (await win.locator('.tab.on', { hasText: 'customers' }).count()) === 1 && (await win.locator('.tab-pane:visible .filter-box input').inputValue()).includes('LIKE')))
+  await win.locator('.tab-pane:visible .filter-box input').fill('')
+  await win.locator('.tab-pane:visible .filter-box input').press('Enter')
+
+  if (process.env.DBOARD_E2E_SERVERS === '1') {
+    await servers(win, submit)
+    // 서버 상태 · 사용자·권한 창 (MySQL)
+    const myRow = win.locator('.tree-row.conn-row', { hasText: 'mysql-test' }).first()
+    await menu(myRow, '서버 상태…')
+    check('[MySQL] server status cards', await until(async () => (await win.locator('.dialog .stat-card').count()) >= 3, 15000))
+    await shot(win, '21-stats.png')
+    await win.keyboard.press('Escape')
+    await menu(myRow, '사용자·권한…')
+    check('[MySQL] users listed', await until(async () => (await win.locator('.dialog .users-list .compare-row').count()) >= 1, 15000))
+    await win.locator('.dialog .users-list .compare-row', { hasText: 'root' }).first().click()
+    check('[MySQL] user grants', await until(async () => (await win.locator('.dialog .compare-changes li').count()) >= 1, 15000))
+    await win.keyboard.press('Escape')
+  }
 
   // ── 운영 DB · 읽기 전용 접속 ──
   const shopRow = win.locator('.tree-row.conn-row', { hasText: 'shop' })
