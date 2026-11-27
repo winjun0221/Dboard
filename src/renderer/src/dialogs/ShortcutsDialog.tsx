@@ -15,6 +15,9 @@ const GROUPS = [
       ['Ctrl+F', tk('찾기')],
       ['Ctrl+Shift+F', tk('SQL 정렬')],
       ['Ctrl+Shift+E', tk('실행 계획')],
+      ['Ctrl+S · Ctrl+Shift+S', tk('SQL 파일로 저장 · 다른 이름으로')],
+      [tk('Ctrl+클릭'), tk('표 이름: 데이터 열기 (올려 두면 열 목록)')],
+      ['sel · cnt · ins · upd · del + Tab', tk('코드 템플릿')],
     ],
   },
   {
@@ -34,6 +37,7 @@ const GROUPS = [
     title: tk('창'),
     keys: [
       ['Ctrl+]', tk('새 SQL 편집기')],
+      ['Ctrl+O', tk('SQL 파일 열기')],
       ['Ctrl+W', tk('탭 닫기')],
       ['Ctrl+Tab', tk('다음 탭')],
       ['Ctrl+B', tk('옆 칸 숨기기·보이기')],

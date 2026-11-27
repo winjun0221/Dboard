@@ -133,6 +133,12 @@ export class Store {
     return this.info(copy)
   }
 
+  /** 접속을 폴더로 묶기 (비밀 값·순서는 그대로) */
+  setFolder(ids: string[], folder: string) {
+    const set = new Set(ids)
+    this.writeAll(this.readAll().map((c) => (set.has(c.id) ? { ...c, folder } : c)))
+  }
+
   move(id: string, to: number) {
     const list = this.readAll()
     const i = list.findIndex((c) => c.id === id)

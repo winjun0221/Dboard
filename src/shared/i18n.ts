@@ -7,11 +7,12 @@ import app from './locales/en/app.json'
 import data from './locales/en/data.json'
 import dialogs from './locales/en/dialogs.json'
 import main from './locales/en/main.json'
+import stage2 from './locales/en/stage2.json'
 
 export type Lang = 'ko' | 'en'
 export type LangSetting = 'auto' | Lang
 
-const EN: Record<string, string> = { ...main, ...dialogs, ...data, ...app }
+const EN: Record<string, string> = { ...main, ...dialogs, ...data, ...app, ...stage2 }
 
 let current: Lang = 'ko'
 

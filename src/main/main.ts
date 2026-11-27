@@ -6,7 +6,8 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { resolveLang, setLang, t } from '../shared/i18n'
 import { isReadOnlyQuery } from '../shared/sql'
-import { API_METHODS, dialectOf, type Api, type AppSettings, type ConnectionConfig, type SecretName, type SecretsInput } from '../shared/types'
+import { decodeText, detectEncoding } from '../shared/csv'
+import { API_METHODS, dialectOf, EXTRA_KINDS, type Api, type AppSettings, type ScriptEntry, type SqlFile, type ConnectionConfig, type SecretName, type SecretsInput } from '../shared/types'
 import { Manager, type Resolved } from './conn'
 import { setSqliteWorkerCode } from './drivers/sqlite'
 import {
@@ -26,6 +27,9 @@ let win: BrowserWindow | null = null
 
 // 테스트(scripts/e2e.mjs)는 설정 폴더를 따로 써서 사용자의 접속 정보·설정을 건드리지 않는다
 if (process.env.DBOARD_USER_DATA) app.setPath('userData', process.env.DBOARD_USER_DATA)
+// 화면 시험(e2e): 다른 창에 가려져도 그리기(requestAnimationFrame)가 멈추지 않게 — 끌기 자동 넘김·툴팁 시험이 흔들리지 않도록
+const E2E = process.env.DBOARD_E2E === '1'
+if (E2E) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 const FORCED_THEME = process.env.DBOARD_THEME === 'dark' || process.env.DBOARD_THEME === 'light' ? process.env.DBOARD_THEME : null
 
 // 한 번에 하나만 켠다. 이미 켜져 있으면 그 창을 앞으로 가져오고 이 프로세스는 끝낸다.
@@ -50,7 +54,7 @@ const manager = new Manager(hostKeys)
 
 // ───────── 앱 설정 ─────────
 
-const DEFAULT_SETTINGS: AppSettings = { theme: 'system', language: 'auto', zoom: 0, autoUpdate: true, maxRows: 500, pageSize: 200, editorFontSize: 13, confirmDangerous: true }
+const DEFAULT_SETTINGS: AppSettings = { theme: 'system', language: 'auto', zoom: 0, autoUpdate: true, maxRows: 500, pageSize: 200, editorFontSize: 13, confirmDangerous: true, queryParams: true }
 
 function normalizeSettings(v: unknown): AppSettings {
   const o = typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {}
@@ -64,6 +68,7 @@ function normalizeSettings(v: unknown): AppSettings {
     pageSize: num(o.pageSize, 10, 10_000, DEFAULT_SETTINGS.pageSize),
     editorFontSize: num(o.editorFontSize, 10, 24, DEFAULT_SETTINGS.editorFontSize),
     confirmDangerous: o.confirmDangerous !== false,
+    queryParams: o.queryParams !== false,
   }
 }
 
@@ -180,6 +185,72 @@ function checkWritable(id: string, what: string) {
 const VALUE_LIMIT = 16 * 1024 * 1024
 const SQL_FILTER = [{ name: 'SQL', extensions: ['sql'] }]
 
+// ───────── SQL 스크립트 파일 ─────────
+// 스크립트 폴더(앱 데이터 아래 Scripts) 안의 파일과, 사용자가 고르는 창으로 연·저장한 파일(최근 목록)만 읽고 쓴다
+
+const MAX_SCRIPT = 10 * 1024 * 1024
+const scriptsDir = () => path.join(app.getPath('userData'), 'Scripts')
+const samePath = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+
+function recentScripts(): string[] {
+  const v = store.readJson<unknown>('recent-scripts.json', [])
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
+function addRecent(p: string) {
+  store.writeJson('recent-scripts.json', [p, ...recentScripts().filter((x) => !samePath(x, p))].slice(0, 30))
+}
+
+function inScripts(p: string): boolean {
+  const rel = path.relative(scriptsDir(), p)
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel)
+}
+
+function checkScriptPath(v: unknown): string {
+  const p = path.resolve(checkText(v, 1000))
+  if (path.extname(p).toLowerCase() !== '.sql') throw new Error(t('SQL 파일(.sql)만 열 수 있어요'))
+  if (!inScripts(p) && !recentScripts().some((x) => samePath(x, p))) throw new Error(t('허용되지 않은 파일이에요'))
+  return p
+}
+
+function readScript(p: string): SqlFile {
+  if (fs.statSync(p).size > MAX_SCRIPT) throw new Error(t('SQL 파일이 너무 커요 (10MB까지)'))
+  const bytes = fs.readFileSync(p)
+  return { path: p, name: path.basename(p), text: decodeText(bytes, detectEncoding(bytes)).replace(/^\uFEFF/, '') }
+}
+
+function listScriptFiles(): ScriptEntry[] {
+  const out: ScriptEntry[] = []
+  const walk = (dir: string, rel: string, depth: number) => {
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      if (out.length >= 1000) return
+      const p = path.join(dir, e.name)
+      if (e.isDirectory() && depth < 4) walk(p, rel ? `${rel}/${e.name}` : e.name, depth + 1)
+      else if (e.isFile() && e.name.toLowerCase().endsWith('.sql')) {
+        const st = fs.statSync(p)
+        out.push({ path: p, name: e.name, folder: rel, mtime: st.mtimeMs, size: st.size })
+      }
+    }
+  }
+  walk(scriptsDir(), '', 0)
+  for (const p of recentScripts()) {
+    if (inScripts(p)) continue
+    try {
+      const st = fs.statSync(p)
+      out.push({ path: p, name: path.basename(p), folder: null, mtime: st.mtimeMs, size: st.size })
+    } catch {
+      // 지워진 파일은 목록에서 뺀다
+    }
+  }
+  return out
+}
+
 // ───────── IPC ─────────
 
 type Handlers = { [K in keyof Api]: (...args: unknown[]) => ReturnType<Api[K]> }
@@ -203,6 +274,35 @@ const handlers: Handlers = {
   },
   duplicateConnection: async (id) => store.duplicate(checkConnId(id), t(' (복사본)')),
   moveConnection: async (id, to) => store.move(checkConnId(id), checkInt(to, 0, 100_000)),
+  setConnectionFolder: async (ids, folder) => {
+    if (!Array.isArray(ids) || ids.length > 10_000) throw new Error(t('잘못된 요청'))
+    store.setFolder(ids.map(checkConnId), checkText(folder ?? '', 100).trim())
+  },
+  exportConnections: async () => {
+    const file = await saveAs(t('접속 목록 내보내기'), 'dboard-connections.json', [{ name: 'JSON', extensions: ['json'] }])
+    if (!file) return null
+    // 비밀번호·SSH 비밀번호는 넣지 않는다 (가져온 쪽에서 연결할 때 묻는다)
+    const list = store.list().map(({ saved: _saved, id: _id, ...c }) => c)
+    fs.writeFileSync(file, JSON.stringify({ app: 'DBoard', version: 1, connections: list }, null, 2), 'utf8')
+    return list.length
+  },
+  importConnections: async () => {
+    const r = await dialog.showOpenDialog(win!, { title: t('접속 목록 가져오기'), properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }, { name: t('모든 파일'), extensions: ['*'] }] })
+    if (r.canceled || r.filePaths.length === 0) return null
+    const f = r.filePaths[0]
+    if (fs.statSync(f).size > 5 * 1024 * 1024) throw new Error(t('파일이 너무 커요'))
+    let data: unknown
+    try {
+      data = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, ''))
+    } catch {
+      throw new Error(t('접속 목록 파일(JSON)이 아니에요'))
+    }
+    const raw = Array.isArray(data) ? data : (data as { connections?: unknown })?.connections
+    if (!Array.isArray(raw) || raw.length > 1000) throw new Error(t('접속 목록 파일(JSON)이 아니에요'))
+    const configs = raw.map((x) => checkConfig({ ...(typeof x === 'object' && x ? x : {}), id: '' })).filter((c) => c.name)
+    for (const c of configs) store.save(c, {})
+    return configs.length
+  },
   testConnection: async (c, s) => {
     const config = checkConfig(c)
     validateForConnect(config)
@@ -293,6 +393,54 @@ const handlers: Handlers = {
     const live = manager.get(checkConnId(id))
     const d = checkName(db)
     return live.mod.completion(await live.metaSession(d), d, checkName(schema))
+  },
+
+  serverSessions: async (id) => {
+    const live = manager.get(checkConnId(id))
+    if (!live.mod.sessions) throw new Error(t('SQLite에는 서버 세션이 없어요'))
+    return live.mod.sessions.list(await live.metaSession())
+  },
+  killSession: async (id, sid, queryOnly) => {
+    const live = manager.get(checkConnId(id))
+    if (!live.mod.sessions) throw new Error(t('SQLite에는 서버 세션이 없어요'))
+    await live.mod.sessions.kill(await live.metaSession(), checkName(sid), checkBool(queryOnly))
+  },
+  extraObjects: async (id, db, schema) => {
+    const live = manager.get(checkConnId(id))
+    const d = checkName(db)
+    return live.mod.extras(await live.metaSession(d), d, checkName(schema))
+  },
+  objectSource: async (id, db, schema, kind, oid) => {
+    const live = manager.get(checkConnId(id))
+    const d = checkName(db)
+    return live.mod.source(await live.metaSession(d), d, checkName(schema), checkOneOf(kind, EXTRA_KINDS), checkName(oid))
+  },
+  tableDesign: async (id, ref) => {
+    const live = manager.get(checkConnId(id))
+    const r = checkRef(ref)
+    return live.mod.design(await live.metaSession(r.db), r)
+  },
+  runDdl: async (id, db, schema, statements) => {
+    const cid = checkConnId(id)
+    checkWritable(cid, t('구조를 바꿀'))
+    const live = manager.get(cid)
+    if (!Array.isArray(statements) || statements.length === 0 || statements.length > 10_000) throw new Error(t('잘못된 요청'))
+    const list = statements.map((x) => checkSql(x))
+    const d = checkName(db)
+    // 따로 연결을 열어 실행하고 닫는다 (편집기 탭의 트랜잭션과 섞이지 않게)
+    const key = `ddl-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
+    const s = await manager.editorSession(cid, key, d, checkName(schema))
+    const t0 = performance.now()
+    const base = { at: Date.now(), connId: cid, connName: live.config.name, db: d || live.defaultDb, sql: list.join(';\n') + ';' }
+    try {
+      await dump.runStatements(s, live.mod.dialect, list)
+      store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows: null, error: null })
+    } catch (e) {
+      store.addHistory({ ...base, ms: Math.round(performance.now() - t0), rows: null, error: e instanceof Error ? e.message : String(e) })
+      throw e
+    } finally {
+      await manager.closeEditor(key)
+    }
   },
 
   // SQL 편집기
@@ -443,6 +591,42 @@ const handlers: Handlers = {
       await manager.closeEditor(key)
     }
   },
+  openSqlFile: async () => {
+    fs.mkdirSync(scriptsDir(), { recursive: true })
+    const r = await dialog.showOpenDialog(win!, { title: t('SQL 파일 열기'), defaultPath: scriptsDir(), properties: ['openFile'], filters: [...SQL_FILTER, { name: t('모든 파일'), extensions: ['*'] }] })
+    if (r.canceled || r.filePaths.length === 0) return null
+    const f = readScript(r.filePaths[0])
+    addRecent(f.path)
+    return f
+  },
+  readSqlFile: async (p) => readScript(checkScriptPath(p)),
+  saveSqlFile: async (p, text, name) => {
+    const body = checkText(text, MAX_SCRIPT)
+    let file: string
+    if (p === null || p === undefined || p === '') {
+      fs.mkdirSync(scriptsDir(), { recursive: true })
+      const base = checkText(name ?? '', 200).replace(/[\\/:*?"<>|]/g, '_').replace(/\.sql$/i, '').trim() || 'script'
+      const r = await dialog.showSaveDialog(win!, { title: t('SQL 파일로 저장'), defaultPath: path.join(scriptsDir(), base + '.sql'), filters: SQL_FILTER })
+      if (r.canceled || !r.filePath) return null
+      file = r.filePath.toLowerCase().endsWith('.sql') ? r.filePath : r.filePath + '.sql'
+    } else file = checkScriptPath(p)
+    fs.writeFileSync(file, body, 'utf8')
+    addRecent(file)
+    return { path: file, name: path.basename(file), text: '' }
+  },
+  listScripts: async () => ({ dir: scriptsDir(), files: listScriptFiles() }),
+  forgetScript: async (p) => {
+    const f = path.resolve(checkText(p, 1000))
+    store.writeJson('recent-scripts.json', recentScripts().filter((x) => !samePath(x, f)))
+  },
+  revealScript: async (p) => {
+    if (p === null || p === undefined) {
+      fs.mkdirSync(scriptsDir(), { recursive: true })
+      await shell.openPath(scriptsDir())
+      return
+    }
+    shell.showItemInFolder(checkScriptPath(p))
+  },
   pickCsv: async () => {
     const r = await dialog.showOpenDialog(win!, { title: t('CSV 파일 고르기'), properties: ['openFile'], filters: [...CSV_FILTER, { name: t('모든 파일'), extensions: ['*'] }] })
     if (r.canceled || r.filePaths.length === 0) return null
@@ -523,6 +707,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
+      backgroundThrottling: !E2E,
     },
   })
   win.once('ready-to-show', () => win?.show())

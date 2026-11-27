@@ -303,3 +303,30 @@ export function ddlReferences(ddl: string, d: Dialect): string[] {
   }
   return [...out]
 }
+
+/** 쿼리 변수 하나: SQL 안의 :이름 또는 ${이름} 자리 */
+export interface QueryParam {
+  name: string
+  from: number
+  to: number
+}
+
+/** 쿼리 변수 찾기. 문자열·주석 안은 빼고, PostgreSQL ::타입 변환과 := 대입도 변수가 아니다 */
+export function findParams(src: string, d: Dialect): QueryParam[] {
+  const m = mask(src, d)
+  const out: QueryParam[] = []
+  const re = /\$\{([A-Za-z_][\w.]*)\}|(?<![:\w$@]):([A-Za-z_]\w*)/g
+  for (let x = re.exec(m); x; x = re.exec(m)) out.push({ name: x[1] ?? x[2], from: x.index, to: x.index + x[0].length })
+  return out
+}
+
+/** 쿼리 변수 자리에 값을 그대로 넣는다 (값은 SQL 조각: 글자는 따옴표까지 사용자가 쓴다) */
+export function bindParams(src: string, d: Dialect, values: Record<string, string>): string {
+  const list = findParams(src, d)
+  let s = src
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i]
+    if (Object.prototype.hasOwnProperty.call(values, p.name)) s = s.slice(0, p.from) + values[p.name] + s.slice(p.to)
+  }
+  return s
+}

@@ -1,12 +1,14 @@
 // 앱 틀: 제목 줄(메뉴) · 옆 칸(탐색기·실행 기록 탭) · 편집 탭(SQL 편집기·표) · 상태 줄. 탭이 없으면 시작 화면
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { Database, Eye, History, PanelLeftClose, PanelLeftOpen, Plus, SquareTerminal, Table2, X } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Database, Eye, FileCode2, History, PanelLeftClose, PanelLeftOpen, Plus, SquareTerminal, Table2, X } from 'lucide-react'
 import { resolveLang, setLang, getLang, t } from './i18n'
-import { useSettings } from './api'
+import { api, errorText, useSettings } from './api'
 import { UiProvider, useUi } from './ui'
 import { useWs, WsProvider, type Tab } from './ws'
 import { Navigator } from './components/Navigator'
 import { HistoryPanel } from './components/HistoryPanel'
+import { ScriptsPanel } from './components/ScriptsPanel'
 import { Splitter, usePaneSize, clamp } from './components/Splitter'
 import { TitleBar } from './components/TitleBar'
 import { StatusBar } from './components/StatusBar'
@@ -35,13 +37,15 @@ export default function App() {
 }
 
 export function tabTitle(tab: Tab): string {
-  return tab.kind === 'editor' ? tab.title : displayName(tab.ref)
+  return tab.kind === 'editor' ? tab.title : tab.newTable ? t('새 표') : displayName(tab.ref)
 }
 
 const SIDE_KEY = 'dboard.side.hidden'
 
 export interface ShellActions {
   newEditor(): void
+  /** .sql 파일 열기 (고르는 창) */
+  openFile(): void
   openSettings(tab?: 'general' | 'editor' | 'about'): void
   sideHidden: boolean
   toggleSide(): void
@@ -50,6 +54,7 @@ export interface ShellActions {
 function Shell() {
   const ws = useWs()
   const ui = useUi()
+  const qc = useQueryClient()
   const [sideW, setSideW, resetSideW] = usePaneSize('side', 300)
   const [sideHidden, setSideHidden] = useState(() => {
     try {
@@ -81,9 +86,20 @@ function Shell() {
     if (await ws.ensureConnected(id)) ws.openEditor(id)
   }
 
-  const actions: ShellActions = { newEditor: () => void newEditor(), openSettings, sideHidden, toggleSide }
+  const openFile = async () => {
+    try {
+      const f = await api.openSqlFile()
+      if (!f) return
+      ws.openScript(f)
+      void qc.invalidateQueries({ queryKey: ['scripts'] })
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+    }
+  }
 
-  // 단축키: Ctrl+] 새 SQL 편집기, Ctrl+W 탭 닫기, Ctrl+Tab 다음 탭, Ctrl+B 옆 칸, Ctrl+, 설정
+  const actions: ShellActions = { newEditor: () => void newEditor(), openFile: () => void openFile(), openSettings, sideHidden, toggleSide }
+
+  // 단축키: Ctrl+] 새 SQL 편집기, Ctrl+O SQL 파일 열기, Ctrl+W 탭 닫기, Ctrl+Tab 다음 탭, Ctrl+B 옆 칸, Ctrl+, 설정
   const keys = useRef(actions)
   keys.current = actions
   useEffect(() => {
@@ -93,6 +109,9 @@ function Shell() {
       if (e.key === ']') {
         e.preventDefault()
         keys.current.newEditor()
+      } else if ((e.key === 'o' || e.key === 'O') && !e.shiftKey && !dialogOpen) {
+        e.preventDefault()
+        keys.current.openFile()
       } else if (e.key === 'w' || e.key === 'W') {
         if (ws.active && !dialogOpen) {
           e.preventDefault()
@@ -141,13 +160,16 @@ function Shell() {
                 <button className={`panel-tab ${ws.panel === 'nav' ? 'on' : ''}`} role="tab" aria-selected={ws.panel === 'nav'} onClick={() => ws.setPanel('nav')}>
                   <Database />{t('탐색기')}
                 </button>
+                <button className={`panel-tab ${ws.panel === 'scripts' ? 'on' : ''}`} role="tab" aria-selected={ws.panel === 'scripts'} onClick={() => ws.setPanel('scripts')}>
+                  <FileCode2 />{t('스크립트')}
+                </button>
                 <button className={`panel-tab ${ws.panel === 'history' ? 'on' : ''}`} role="tab" aria-selected={ws.panel === 'history'} onClick={() => ws.setPanel('history')}>
                   <History />{t('실행 기록')}
                 </button>
                 <span className="spacer" />
                 <button className="icon-btn small" title={t('옆 칸 숨기기 (Ctrl+B)')} onClick={toggleSide}><PanelLeftClose /></button>
               </div>
-              {ws.panel === 'nav' ? <Navigator /> : <HistoryPanel />}
+              {ws.panel === 'nav' ? <Navigator /> : ws.panel === 'scripts' ? <ScriptsPanel onOpenFile={actions.openFile} onNewEditor={actions.newEditor} /> : <HistoryPanel />}
             </aside>
             <Splitter dir="col" onReset={resetSideW} onDrag={(x) => {
               const left = body.current?.getBoundingClientRect().left ?? 0
@@ -190,6 +212,7 @@ function Shell() {
                 >
                   <Icon />
                   <span className="ellipsis">{tabTitle(tab)}</span>
+                  {tab.kind === 'editor' && tab.modified && <span className="tab-mod" title={t('파일에 저장하지 않은 고침')}>●</span>}
                   {c && <span className="tab-conn ellipsis">{c.name}</span>}
                   <button className="tab-close" onMouseDown={(e) => e.stopPropagation()} onClick={() => void ws.closeTab(tab.id)} aria-label={t('닫기')}><X /></button>
                 </div>

@@ -26,9 +26,11 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 
 ## Features
 
-- **Connections** — save, duplicate and color connections, test before saving, SSH tunnel (password or private key), SSL, **production marking** (editors start in manual commit, data-changing statements ask first, red markers), **read-only connections**
-- **Explorer** — database → schema → tables and views → columns and indexes, table search
-- **SQL editor** — syntax highlighting, autocomplete as you type (accept with `Tab`; table names, columns of the tables in FROM, `alias.column`), run the statement at the cursor or the selection (`Ctrl+Enter`), run the whole script (`Alt+X`), cancel, query history, **manual commit** (commit and rollback buttons), **format SQL** (`Ctrl+Shift+F`), **execution plan** (`Ctrl+Shift+E`, without running)
+- **Connections** — save, duplicate and color connections, test before saving, SSH tunnel (password or private key), SSL, **production marking** (editors start in manual commit, data-changing statements ask first, red markers), **read-only connections**, **connection folders**, export and import the connection list (without passwords), **session manager** (see connections and running queries on the server, cancel a query or kill a session)
+- **Explorer** — database → schema → tables and views → columns and indexes, **procedures, functions, triggers, sequences and events** (double-click to open the source in an editor), table search, rename, empty or drop tables and views (shows the SQL first)
+- **Table designer** — create tables and edit columns (name, type, NULL, default, auto-increment, comment), primary key, indexes and foreign keys. Preview the ALTER statements before running them (for changes SQLite can't do with ALTER, the table is rebuilt and the data copied)
+- **SQL editor** — syntax highlighting, autocomplete as you type (accept with `Tab`; table names, columns of the tables in FROM, `alias.column`), run the statement at the cursor or the selection (`Ctrl+Enter`), run the whole script (`Alt+X`), cancel, query history, **manual commit** (commit and rollback buttons), **format SQL** (`Ctrl+Shift+F`), **execution plan** (`Ctrl+Shift+E`, without running), **query variables** (`:name`, `${name}` — asks for values before running), **code templates** (`sel`, `cnt`, `ins`, `upd`, `del` + `Tab`), `Ctrl+click` a table name to open its data, hover for its columns
+- **SQL script files** — save (`Ctrl+S`) and open (`Ctrl+O`) `.sql` files, script list (scripts folder and recent files), open editors come back when you restart
 - **Result grid** — smooth with tens of thousands of rows, click to sort, copy cells or ranges (paste straight into Excel), sum/avg/min/max of the selection, record view, export to CSV, Excel, JSON, Markdown or INSERT statements
 - **Edit table data** — edit cells, add and delete rows, undo (`Ctrl+Z`), preview the SQL before saving, save in one transaction (everything is rolled back if anything fails), follow foreign keys, copy rows as INSERT/UPDATE/DELETE, value viewer (pretty JSON, images, hex, save to file)
 - **DDL and CSV import** — view and copy the CREATE statement, import CSV (UTF-8 and EUC-KR detected automatically, column mapping)
@@ -53,9 +55,11 @@ No Java or database client is needed. The app isn't code-signed yet, so if Windo
 | `Ctrl+Space` · `Tab` | Show · accept autocomplete |
 | `Ctrl+/` | Toggle comment |
 | `Ctrl+Shift+F` · `Ctrl+Shift+E` | Format SQL · execution plan |
+| `Ctrl+S` · `Ctrl+Shift+S` · `Ctrl+O` | Save as SQL file · save as · open |
+| `Ctrl+click` | On a table name in the editor: open its data |
 | `Ctrl+]` | New SQL editor |
 | `Ctrl+W` · `Ctrl+Tab` | Close tab · next tab |
-| `Ctrl+S` · `Ctrl+Z` | Save table data · undo |
+| `Ctrl+S` · `Ctrl+Z` | Save table data or table design · undo |
 | `Ctrl+C` · `Ctrl+Shift+C` | Copy results · copy with column names |
 
 ## Building

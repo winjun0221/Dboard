@@ -8,11 +8,32 @@ import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
 import {
   crosshairCursor, drawSelection, dropCursor, EditorView, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers,
-  placeholder as placeholderExt, rectangularSelection,
+  hoverTooltip, placeholder as placeholderExt, rectangularSelection,
 } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import { dialectOf, type DriverKind } from '../../../shared/types'
-import { columnCompletion } from './sqlComplete'
+import { columnCompletion, templateCompletion } from './sqlComplete'
+import { t } from '../i18n'
+
+/** 마우스 아래 이름 (따옴표·점 포함: "s"."t", [dbo].[t], `t`) */
+function nameAt(view: EditorView, pos: number): string | null {
+  const line = view.state.doc.lineAt(pos)
+  const text = line.text
+  const i = pos - line.from
+  const part = /[`"[\]\p{L}\p{N}_$.]/u
+  let a = i
+  let b = i
+  while (a > 0 && part.test(text[a - 1])) a--
+  while (b < text.length && part.test(text[b])) b++
+  const w = text.slice(a, b).replace(/^\.+|\.+$/g, '')
+  return w || null
+}
+
+/** 표 이름 위에 올렸을 때 보여 줄 것 */
+export interface NameInfo {
+  title: string
+  columns: { name: string; type: string; pk: boolean }[]
+}
 
 const DIALECT: Record<DriverKind, SQLDialect> = { sqlite: SQLite, mysql: MySQL, mariadb: MariaSQL, postgres: PostgreSQL, mssql: MSSQL }
 
@@ -20,6 +41,7 @@ const DIALECT: Record<DriverKind, SQLDialect> = { sqlite: SQLite, mysql: MySQL, 
 const language = (driver: DriverKind, schema?: Record<string, string[]>) => [
   sql({ dialect: DIALECT[driver], schema, upperCaseKeywords: true }),
   DIALECT[driver].language.data.of({ autocomplete: columnCompletion(schema, dialectOf(driver)) }),
+  DIALECT[driver].language.data.of({ autocomplete: templateCompletion(dialectOf(driver)) }),
 ]
 
 // 색은 CSS 변수로 (밝은·어두운 화면에 맞춰 styles.css에서 정함)
@@ -72,7 +94,7 @@ export interface SqlEditorHandle {
   closePopups(): void
 }
 
-export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeholder, onChange, onRun, onRunScript, onFormat, onExplain, handle }: {
+export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeholder, onChange, onRun, onRunScript, onFormat, onExplain, onSave, onOpenName, onHoverName, handle }: {
   initial: string
   driver: DriverKind
   /** 자동 완성용 표 → 열 */
@@ -86,6 +108,11 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
   /** Ctrl+Shift+F 정렬, Ctrl+Shift+E 실행 계획 */
   onFormat?: () => void
   onExplain?: () => void
+  onSave?: (as: boolean) => void
+  /** Ctrl+클릭한 이름이 표면 열고 true */
+  onOpenName?: (name: string) => boolean
+  /** 이름 위에 마우스를 올리면 열 목록 (표가 아니면 null) */
+  onHoverName?: (name: string) => Promise<NameInfo | null>
   handle?: Ref<SqlEditorHandle>
 }) {
   const host = useRef<HTMLDivElement>(null)
@@ -93,8 +120,8 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
   const lang = useRef(new Compartment())
   const size = useRef(new Compartment())
   const ro = useRef(new Compartment())
-  const cb = useRef({ onChange, onRun, onRunScript, onFormat, onExplain })
-  cb.current = { onChange, onRun, onRunScript, onFormat, onExplain }
+  const cb = useRef({ onChange, onRun, onRunScript, onFormat, onExplain, onSave, onOpenName, onHoverName })
+  cb.current = { onChange, onRun, onRunScript, onFormat, onExplain, onSave, onOpenName, onHoverName }
 
   useEffect(() => {
     const v = new EditorView({
@@ -113,6 +140,46 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
           bracketMatching(),
           closeBrackets(),
           autocompletion({ activateOnTyping: true, icons: true }),
+          // Ctrl+클릭: 표 데이터 열기
+          EditorView.domEventHandlers({
+            mousedown(e, view) {
+              if (!(e.ctrlKey || e.metaKey) || e.button !== 0 || !cb.current.onOpenName) return false
+              const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+              const name = pos === null ? null : nameAt(view, pos)
+              if (!name || !cb.current.onOpenName(name)) return false
+              e.preventDefault()
+              return true
+            },
+          }),
+          // 표 이름 위: 열 목록
+          hoverTooltip(async (view, pos) => {
+            const fn = cb.current.onHoverName
+            const name = fn ? nameAt(view, pos) : null
+            if (!fn || !name) return null
+            const info = await fn(name)
+            if (!info) return null
+            return {
+              pos,
+              above: true,
+              create: () => {
+                const dom = document.createElement('div')
+                dom.className = 'cm-name-tip'
+                const head = dom.appendChild(document.createElement('div'))
+                head.className = 'tip-head'
+                head.textContent = info.title
+                const hint = head.appendChild(document.createElement('span'))
+                hint.textContent = t('Ctrl+클릭: 데이터 열기')
+                for (const c of info.columns.slice(0, 40)) {
+                  const row = dom.appendChild(document.createElement('div'))
+                  row.className = 'tip-col' + (c.pk ? ' pk' : '')
+                  row.appendChild(document.createElement('b')).textContent = c.name
+                  row.appendChild(document.createElement('span')).textContent = c.type
+                }
+                if (info.columns.length > 40) dom.appendChild(document.createElement('div')).textContent = t('… 열 {n}개 더', { n: info.columns.length - 40 })
+                return { dom }
+              },
+            }
+          }, { hoverTime: 450 }),
           rectangularSelection(),
           crosshairCursor(),
           highlightActiveLine(),
@@ -127,6 +194,8 @@ export function SqlEditor({ initial, driver, schema, fontSize, readOnly, placeho
             { key: 'Alt-X', run: (v) => { closeCompletion(v); cb.current.onRunScript?.(); return true } },
             { key: 'Mod-Shift-f', run: (v) => { closeCompletion(v); cb.current.onFormat?.(); return !!cb.current.onFormat } },
             { key: 'Mod-Shift-e', run: (v) => { closeCompletion(v); cb.current.onExplain?.(); return !!cb.current.onExplain } },
+            { key: 'Mod-s', run: (v) => { closeCompletion(v); cb.current.onSave?.(false); return !!cb.current.onSave } },
+            { key: 'Mod-Shift-s', run: (v) => { closeCompletion(v); cb.current.onSave?.(true); return !!cb.current.onSave } },
           ])),
           // 자동 완성 목록이 떠 있으면 Tab으로 넣기, 아니면 들여쓰기
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, { key: 'Tab', run: acceptCompletion }, indentWithTab]),

@@ -20,7 +20,7 @@ export function StatusBar() {
     const schema = tab.kind === 'editor' ? tab.schema : tab.ref.schema
     if (db && conn.driver !== 'sqlite') crumbs.push({ icon: Database, text: db })
     if (schema) crumbs.push({ icon: FolderTree, text: schema })
-    if (tab.kind === 'table') crumbs.push({ icon: tab.objKind === 'view' ? Eye : Table2, text: tab.ref.table })
+    if (tab.kind === 'table') crumbs.push({ icon: tab.objKind === 'view' ? Eye : Table2, text: tab.newTable ? t('새 표') : tab.ref.table })
     else crumbs.push({ icon: SquareTerminal, text: tab.title })
   }
 

@@ -1,12 +1,13 @@
-// 표·뷰 탭: 데이터 / 열 / 인덱스 / DDL
+// 표·뷰 탭: 데이터 / 열 / 인덱스 / DDL / 설계 (새 표는 설계만)
 import { useQuery } from '@tanstack/react-query'
-import { ClipboardCopy, Columns3, Eye, FileCode2, KeyRound, ListTree, LoaderCircle, SquareTerminal, Table2 } from 'lucide-react'
+import { ClipboardCopy, Columns3, Eye, FileCode2, KeyRound, ListTree, LoaderCircle, PencilRuler, SquareTerminal, Table2 } from 'lucide-react'
 import { api, errorText, useColumns, useIndexes } from '../api'
 import { useWs, type TableSub, type TableTab } from '../ws'
 import { t } from '../i18n'
 import { SqlEditor } from '../components/SqlEditor'
 import { DriverBadge } from '../components/DriverBadge'
 import { DataView } from './DataView'
+import { DesignView } from './DesignView'
 
 export function TableTabView({ tab, active }: { tab: TableTab; active: boolean }) {
   const ws = useWs()
@@ -22,11 +23,12 @@ export function TableTabView({ tab, active }: { tab: TableTab; active: boolean }
   })
   if (!conn) return null
   const path = [tab.ref.db, tab.ref.schema].filter(Boolean).join(' · ')
-  const subs: { value: TableSub; label: string; icon: typeof Table2 }[] = [
+  const subs: { value: TableSub; label: string; icon: typeof Table2 }[] = tab.newTable ? [{ value: 'design', label: t('설계'), icon: PencilRuler }] : [
     { value: 'data', label: t('데이터'), icon: Table2 },
     { value: 'columns', label: t('열|column'), icon: Columns3 },
     ...(!isView ? [{ value: 'indexes' as const, label: t('인덱스'), icon: ListTree }] : []),
     { value: 'ddl', label: 'DDL', icon: FileCode2 },
+    ...(!isView ? [{ value: 'design' as const, label: t('설계'), icon: PencilRuler }] : []),
   ]
   const needConnect = !isOn && tab.sub !== 'data'
 
@@ -43,14 +45,19 @@ export function TableTabView({ tab, active }: { tab: TableTab; active: boolean }
         <span className="spacer" />
         <span className="obj-title">
           <span className={`obj-icon ${isView ? 'view' : ''}`}>{isView ? <Eye /> : <Table2 />}</span>
-          <b className="ellipsis">{tab.ref.table}</b>
+          <b className="ellipsis">{tab.newTable ? t('새 표') : tab.ref.table}</b>
           <span className="muted ellipsis"><DriverBadge driver={conn.driver} size={12} /> {conn.name}{path && ' · ' + path}{isView && ' · ' + t('뷰')}</span>
         </span>
       </div>
       {needConnect && <div className="center-fill"><button className="btn" onClick={() => void ws.ensureConnected(tab.connId)}>{t('연결해서 보기')}</button></div>}
-      <div className="table-body" style={{ display: tab.sub === 'data' ? 'flex' : 'none' }}>
+      {!tab.newTable && <div className="table-body" style={{ display: tab.sub === 'data' ? 'flex' : 'none' }}>
         <DataView tabId={tab.id} connId={tab.connId} target={tab.ref} objKind={tab.objKind} active={active && tab.sub === 'data'} initialFilter={tab.filter} filterSeq={tab.filterSeq} />
-      </div>
+      </div>}
+      {!needConnect && tab.sub === 'design' && (
+        <div className="table-body">
+          <DesignView key={tab.newTable ? 'new' : 'table'} tab={tab} conn={conn} active={active} />
+        </div>
+      )}
       {!needConnect && tab.sub === 'columns' && (
         <div className="table-body scroll">
           {cols.isPending ? <Loading /> : cols.error ? <div className="banner error">{errorText(cols.error)}</div> : (

@@ -6,21 +6,34 @@ import { useQueryClient } from '@tanstack/react-query'
 import { format as formatSql } from 'sql-formatter'
 import {
   AlignLeft, CheckCheck, CircleAlert, CircleCheck, CircleCheckBig, Database, FolderTree, GitCommitHorizontal, History, ListTree, LoaderCircle, Lock, Play,
-  PlaySquare, ShieldAlert, Square, Undo2,
+  PlaySquare, Save, ShieldAlert, Square, Undo2,
 } from 'lucide-react'
-import { dialectOf, type DriverKind, type ExplainResult, type StatementResult } from '../../../shared/types'
-import { firstKeyword, isDangerous, isReadOnlyQuery, splitSql, statementAt } from '../../../shared/sql'
+import { dialectOf, type DriverKind, type ExplainResult, type StatementResult, type TableRef } from '../../../shared/types'
+import { bindParams, findParams, firstKeyword, isDangerous, isReadOnlyQuery, splitSql, statementAt } from '../../../shared/sql'
 import { api, errorText, useCompletion, useDatabases, useSchemas } from '../api'
 import { loadText, saveText, setDirty, useWs, type EditorTab } from '../ws'
 import { useUi } from '../ui'
 import { t, tx } from '../i18n'
 import { fmtNum, formatMs } from '../format'
-import { SqlEditor, type SqlEditorHandle } from '../components/SqlEditor'
+import { SqlEditor, type NameInfo, type SqlEditorHandle } from '../components/SqlEditor'
 import { ResultView } from '../components/ResultView'
 import { Splitter, usePaneSize, clamp } from '../components/Splitter'
 import { DriverBadge } from '../components/DriverBadge'
 import { registerActions, registerEditor, type EditorActions } from '../editors'
 import { Dialog } from '../components/Dialog'
+import { ParamsDialog } from '../dialogs/ParamsDialog'
+
+const PARAMS_KEY = 'dboard.params'
+
+/** 지난번에 넣은 쿼리 변수 값 (이름마다) */
+function loadParams(): Record<string, string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(PARAMS_KEY) ?? '{}') as unknown
+    return typeof v === 'object' && v !== null ? (v as Record<string, string>) : {}
+  } catch {
+    return {}
+  }
+}
 
 interface RunItem {
   sql: string
@@ -85,6 +98,7 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
       commit: () => actions.current?.commit(),
       rollback: () => actions.current?.rollback(),
       toggleManual: () => actions.current?.toggleManual(),
+      save: (as) => actions.current?.save(as),
       get running() {
         return actions.current?.running ?? false
       },
@@ -100,9 +114,50 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
 
   // 커밋하지 않은 변경이 있으면 탭을 닫을 때 묻는다 (닫으면 연결과 함께 되돌려짐)
   useEffect(() => {
-    setDirty(tab.id, pending > 0)
+    setDirty(tab.id, pending > 0 || !!tab.modified)
     return () => setDirty(tab.id, false)
-  }, [tab.id, pending])
+  }, [tab.id, pending, tab.modified])
+
+  /** 편집기 안의 이름 → 지금 DB·스키마의 표 (자동 완성 목록에 있는 것만) */
+  const resolveName = (raw: string): TableRef | null => {
+    const parts = raw.split('.').map((p) => p.replace(/^[`"[]|[`"\]]$/g, '')).filter(Boolean)
+    const table = parts[parts.length - 1]
+    if (!table) return null
+    const keys = Object.keys(completion.data ?? {})
+    const hit = keys.find((k) => k === table) ?? keys.find((k) => k.toLowerCase() === table.toLowerCase())
+    if (!hit) return null
+    if (parts.length >= 2 && (d === 'postgres' || d === 'mssql') && parts[parts.length - 2].toLowerCase() !== (tab.schema || '').toLowerCase()) return null
+    return { db: tab.db, schema: d === 'postgres' || d === 'mssql' ? tab.schema : '', table: hit }
+  }
+  const openName = (raw: string): boolean => {
+    const ref = resolveName(raw)
+    if (!ref) return false
+    void (async () => {
+      const objs = await qc.fetchQuery({ queryKey: ['objects', tab.connId, ref.db, ref.schema], queryFn: () => api.objects(tab.connId, ref.db, ref.schema) }).catch(() => [])
+      ws.openTable(tab.connId, ref, objs.find((o) => o.name === ref.table)?.kind ?? 'table', 'data')
+    })()
+    return true
+  }
+  const hoverName = async (raw: string): Promise<NameInfo | null> => {
+    const ref = resolveName(raw)
+    if (!ref) return null
+    const cols = await qc.fetchQuery({ queryKey: ['columns', tab.connId, ref.db, ref.schema, ref.table], queryFn: () => api.columns(tab.connId, ref) }).catch(() => null)
+    return cols ? { title: ref.table, columns: cols.map((c) => ({ name: c.name, type: c.type, pk: c.pk })) } : null
+  }
+
+  /** SQL 파일로 저장. 연결된 파일이 없거나 as면 저장 창 */
+  const saveFile = async (as: boolean) => {
+    const text = ed.current?.text() ?? ''
+    try {
+      const r = await api.saveSqlFile(as ? null : tab.file ?? null, text, tab.title)
+      if (!r) return
+      ws.updateTab(tab.id, { file: r.path, title: r.name, modified: false })
+      void qc.invalidateQueries({ queryKey: ['scripts'] })
+      ui.notify(t('저장했어요: {name}', { name: r.name }), 'success')
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+    }
+  }
 
   // 실행 중 걸린 시간 표시
   useEffect(() => {
@@ -132,10 +187,26 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
     const h = ed.current
     if (!h) return
     h.closePopups()
-    const pieces = piecesFor(mode)
+    let pieces = piecesFor(mode)
     if (pieces.length === 0) {
       ui.notify(t('실행할 SQL이 없어요'), 'warn')
       return
+    }
+    // 쿼리 변수: 값을 물어서 그 자리에 넣는다
+    if (ws.settings.queryParams !== false) {
+      const names = [...new Set(pieces.flatMap((p) => findParams(p, d).map((x) => x.name)))]
+      if (names.length) {
+        const values = await new Promise<Record<string, string> | null>((resolve) => {
+          ui.open((close) => <ParamsDialog names={names} initial={loadParams()} onClose={() => { resolve(null); close() }} onSubmit={(v) => { resolve(v); close() }} />)
+        })
+        if (!values) return
+        try {
+          localStorage.setItem(PARAMS_KEY, JSON.stringify({ ...loadParams(), ...values }))
+        } catch {
+          // 기억 못 해도 실행은 한다
+        }
+        pieces = pieces.map((p) => bindParams(p, d, values))
+      }
     }
     const writes = pieces.filter((p) => !isReadOnlyQuery(p, d) && !END_WORDS.has(firstKeyword(p, d)))
     if (conn.readOnly === true && writes.length) {
@@ -195,7 +266,7 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
     const resIdx = out.findIndex((x) => x.result?.columns)
     setView(failed || resIdx < 0 ? 'log' : resIdx)
     if (ddl) {
-      void qc.invalidateQueries({ predicate: (q) => q.queryKey[1] === tab.connId && ['objects', 'columns', 'indexes', 'completion', 'schemas', 'databases'].includes(String(q.queryKey[0])) })
+      void qc.invalidateQueries({ predicate: (q) => q.queryKey[1] === tab.connId && ['objects', 'columns', 'indexes', 'completion', 'schemas', 'databases', 'extras', 'design', 'ddl'].includes(String(q.queryKey[0])) })
     }
   }
 
@@ -315,7 +386,7 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
 
   actions.current = {
     run: (mode) => void run(mode), cancel: () => void cancel(), running, format: formatText, explain: () => void showPlan(),
-    commit: () => void endTx(true), rollback: () => void endTx(false), toggleManual: () => void toggleManual(), manual, pending,
+    commit: () => void endTx(true), rollback: () => void endTx(false), toggleManual: () => void toggleManual(), manual, pending, save: (as) => void saveFile(as),
   }
 
   const dbList = dbs.data?.databases ?? []
@@ -352,6 +423,7 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
           </>
         )}
         <span className="bar-sep" />
+        <button className="tbtn icon" title={tab.file ? t('{file}에 저장 (Ctrl+S)', { file: tab.title }) : t('SQL 파일로 저장 (Ctrl+S)')} onClick={() => void saveFile(false)}><Save /></button>
         <button className="tbtn icon" title={t('실행 기록')} onClick={() => ws.setPanel('history')}><History /></button>
         {running && <span className="busy"><LoaderCircle className="spin" />{t('실행 중… {time}', { time: formatMs(elapsed) })}</span>}
         <span className="spacer" />
@@ -392,7 +464,13 @@ export function EditorTabView({ tab }: { tab: EditorTab }) {
             schema={completion.data}
             fontSize={ws.settings.editorFontSize}
             placeholder={t('SQL을 입력하세요. Ctrl+Enter로 실행, Ctrl+Space로 자동 완성')}
-            onChange={(text) => saveText(tab.id, text)}
+            onChange={(text) => {
+              saveText(tab.id, text)
+              if (tab.file && !tab.modified) ws.updateTab(tab.id, { modified: true })
+            }}
+            onSave={(as) => void saveFile(as)}
+            onOpenName={openName}
+            onHoverName={hoverName}
             onRun={() => void run('current')}
             onRunScript={() => void run('script')}
             onFormat={formatText}

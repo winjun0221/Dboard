@@ -9,7 +9,7 @@ declare global {
 
 export const api = window.api
 
-export const DEFAULT_SETTINGS: AppSettings = { theme: 'system', language: 'auto', zoom: 0, autoUpdate: true, maxRows: 500, pageSize: 200, editorFontSize: 13, confirmDangerous: true }
+export const DEFAULT_SETTINGS: AppSettings = { theme: 'system', language: 'auto', zoom: 0, autoUpdate: true, maxRows: 500, pageSize: 200, editorFontSize: 13, confirmDangerous: true, queryParams: true }
 
 export const useConnections = () => useQuery({ queryKey: ['connections'], queryFn: () => api.listConnections() })
 
@@ -23,6 +23,8 @@ export const useSchemas = (connId: string, db: string, enabled: boolean) =>
   useQuery({ queryKey: ['schemas', connId, db], queryFn: () => api.schemas(connId, db), enabled })
 export const useObjects = (connId: string, db: string, schema: string, enabled: boolean) =>
   useQuery({ queryKey: ['objects', connId, db, schema], queryFn: () => api.objects(connId, db, schema), enabled })
+export const useExtras = (connId: string, db: string, schema: string, enabled: boolean) =>
+  useQuery({ queryKey: ['extras', connId, db, schema], queryFn: () => api.extraObjects(connId, db, schema), enabled })
 export const useColumns = (connId: string, ref: TableRef, enabled: boolean) =>
   useQuery({ queryKey: ['columns', connId, ref.db, ref.schema, ref.table], queryFn: () => api.columns(connId, ref), enabled })
 export const useIndexes = (connId: string, ref: TableRef, enabled: boolean) =>

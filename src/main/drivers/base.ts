@@ -3,7 +3,7 @@
 import { beginSql } from '../../shared/dialect'
 import { firstKeyword, mask } from '../../shared/sql'
 import type {
-  Cell, ColumnInfo, ConnectionConfig, DatabaseList, DbObject, Dialect, ForeignKeyInfo, IndexInfo, ObjectKind, ResultColumn, StatementResult, TableRef,
+  Cell, ColumnInfo, ConnectionConfig, DatabaseList, DbObject, DesignForeignKey, DesignIndex, Dialect, ExtraKind, ExtraObject, FkAction, ServerSession, ForeignKeyInfo, IndexInfo, ObjectKind, ResultColumn, StatementResult, TableDesign, TableRef,
 } from '../../shared/types'
 
 /** 사용자가 직접 쓴 트랜잭션 문장 (수동 커밋에서 감싸지 않고 그대로) */
@@ -196,6 +196,26 @@ export interface DriverModule {
   ddl(s: Session, ref: TableRef, kind: ObjectKind): Promise<string>
   foreignKeys(s: Session, ref: TableRef): Promise<ForeignKeyInfo[]>
   completion(s: Session, db: string, schema: string): Promise<Record<string, string[]>>
+  /** 세션 관리자 (SQLite는 없음: null) */
+  sessions: null | {
+    list(s: Session): Promise<ServerSession[]>
+    /** queryOnly: 실행 중인 쿼리만 취소 (SQL Server는 못 함) */
+    kill(s: Session, id: string, queryOnly: boolean): Promise<void>
+  }
+  /** 표·뷰 말고 다른 개체 (프로시저·함수·트리거·시퀀스·이벤트) */
+  extras(s: Session, db: string, schema: string): Promise<ExtraObject[]>
+  /** 개체 원본 (CREATE 문). id는 extras가 준 값 */
+  source(s: Session, db: string, schema: string, kind: ExtraKind, id: string): Promise<string>
+  /** 표 설계 화면: 열(기본값은 SQL 식)·기본 키·인덱스(기본 키 말고)·외래 키(ON DELETE·UPDATE) */
+  design(s: Session, ref: TableRef): Promise<TableDesign>
+}
+
+/** 시스템 표의 참조 동작 글자(NO_ACTION, SET NULL, c 등) → FkAction */
+export function fkAction(v: string): FkAction {
+  const u = v.trim().toUpperCase().replace(/_/g, ' ')
+  const code: Record<string, FkAction> = { A: 'NO ACTION', R: 'RESTRICT', C: 'CASCADE', N: 'SET NULL', D: 'SET DEFAULT' }
+  if (code[u]) return code[u]
+  return (['NO ACTION', 'RESTRICT', 'CASCADE', 'SET NULL', 'SET DEFAULT'] as const).find((a) => a === u) ?? 'NO ACTION'
 }
 
 /** 행 하나의 n번째 칸을 글자로 (시스템 표 읽을 때) */
@@ -221,6 +241,37 @@ export function groupForeignKeys(rows: Cell[][], target: (schemaOrDb: string, ta
     }
     fk.columns.push(str(r[1]))
     fk.refColumns.push(str(r[4]))
+  }
+  return [...map.values()]
+}
+
+/** 설계용 외래 키 행들([이름, 열, 참조 스키마(MySQL은 DB), 참조 표, 참조 열, ON UPDATE, ON DELETE]) → DesignForeignKey[] */
+export function groupDesignFks(rows: Cell[][]): DesignForeignKey[] {
+  const map = new Map<string, DesignForeignKey>()
+  for (const r of rows) {
+    const name = str(r[0])
+    let fk = map.get(name)
+    if (!fk) {
+      fk = { name, columns: [], refSchema: str(r[2]), refTable: str(r[3]), refColumns: [], onUpdate: fkAction(str(r[5])), onDelete: fkAction(str(r[6])), orig: name }
+      map.set(name, fk)
+    }
+    fk.columns.push(str(r[1]))
+    fk.refColumns.push(str(r[4]))
+  }
+  return [...map.values()]
+}
+
+/** 설계용 인덱스 행들([이름, unique, 열, UNIQUE 제약인지]) → DesignIndex[] (기본 키는 빼고 넘길 것) */
+export function groupDesignIndexes(rows: Cell[][], expr: string): DesignIndex[] {
+  const map = new Map<string, DesignIndex>()
+  for (const r of rows) {
+    const name = str(r[0])
+    let ix = map.get(name)
+    if (!ix) {
+      ix = { name, unique: bool(r[1]), columns: [], orig: name, ...(bool(r[3]) ? { constraint: true } : {}) }
+      map.set(name, ix)
+    }
+    ix.columns.push(r[2] === null ? expr : str(r[2]))
   }
   return [...map.values()]
 }

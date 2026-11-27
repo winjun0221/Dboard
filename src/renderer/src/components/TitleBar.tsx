@@ -2,7 +2,7 @@
 import { useRef, useState, type MouseEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database,
+  AlignLeft, CircleCheckBig, CircleHelp, DatabaseBackup, ExternalLink, ListTree, Undo2, FilePlay, ScrollText, History, Info, Keyboard, LogOut, PanelLeft, Play, PlaySquare, Plus, RefreshCw, Settings, Square, SquareTerminal, X, Database, FolderOpen, Save, Activity, FileCode2, Download, Upload,
 } from 'lucide-react'
 import type { AppSettings } from '../../../shared/types'
 import { api, errorText } from '../api'
@@ -15,6 +15,7 @@ import UpdateChip from './UpdateChip'
 import { ShortcutsDialog } from '../dialogs/ShortcutsDialog'
 import { DumpDialog } from '../dialogs/DumpDialog'
 import { RunFileDialog } from '../dialogs/RunFileDialog'
+import { SessionsDialog } from '../dialogs/SessionsDialog'
 
 type MenuName = 'file' | 'view' | 'sql' | 'help'
 
@@ -59,6 +60,25 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
     if (here && (await ws.ensureConnected(here.connId))) fn(here)
   }
 
+  const exportConns = async () => {
+    try {
+      const n = await api.exportConnections()
+      if (n !== null) ui.notify(t('접속 {n}개를 내보냈어요 (비밀번호는 빼고)', { n }), 'success')
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+    }
+  }
+  const importConns = async () => {
+    try {
+      const n = await api.importConnections()
+      if (n === null) return
+      void qc.invalidateQueries({ queryKey: ['connections'] })
+      ui.notify(t('접속 {n}개를 가져왔어요. 비밀번호는 연결할 때 물어봐요.', { n }), 'success')
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+    }
+  }
+
   const items = (name: MenuName): MenuItem[] => {
     const ed = editorActions(activeTab?.kind === 'editor' ? activeTab.id : null)
     switch (name) {
@@ -66,10 +86,16 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
         return [
           { label: t('새 연결…'), icon: Plus, onClick: () => ws.editConnection() },
           { label: t('새 SQL 편집기'), icon: SquareTerminal, hint: 'Ctrl+]', onClick: actions.newEditor },
+          { label: t('SQL 파일 열기…'), icon: FolderOpen, hint: 'Ctrl+O', onClick: actions.openFile },
+          { label: t('저장'), icon: Save, hint: 'Ctrl+S', disabled: !ed, onClick: () => ed?.save(false) },
+          { label: t('다른 이름으로 저장…'), hint: 'Ctrl+Shift+S', disabled: !ed, onClick: () => ed?.save(true) },
           'sep',
           { label: t('DDL 내보내기…'), icon: ScrollText, disabled: !here?.db, onClick: () => void withConn((h) => ui.open((close) => <DumpDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} content="structure" onClose={close} />)) },
           { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, disabled: !here?.db, onClick: () => void withConn((h) => ui.open((close) => <DumpDialog conn={ws.conn(h.connId)!} db={h.db} schema={h.schema} only={h.table} onClose={close} />)) },
           { label: t('SQL 파일 실행…'), icon: FilePlay, disabled: !here, onClick: () => void withConn((h) => ui.open((close) => <RunFileDialog conn={ws.conn(h.connId)!} ensureConnected={() => ws.ensureConnected(h.connId)} db={h.db} schema={h.schema} onClose={close} />)) },
+          'sep',
+          { label: t('접속 목록 내보내기…'), icon: Download, disabled: ws.connections.length === 0, onClick: () => void exportConns() },
+          { label: t('접속 목록 가져오기…'), icon: Upload, onClick: () => void importConns() },
           'sep',
           { label: t('탭 닫기'), icon: X, hint: 'Ctrl+W', disabled: !activeTab, onClick: () => activeTab && void ws.closeTab(activeTab.id) },
           { label: t('다른 탭 모두 닫기'), disabled: ws.tabs.length < 2 || !activeTab, onClick: () => activeTab && ws.closeOthers(activeTab.id) },
@@ -81,6 +107,7 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
       case 'view':
         return [
           { label: t('탐색기'), icon: Database, checked: !actions.sideHidden && ws.panel === 'nav', onClick: () => { ws.setPanel('nav'); if (actions.sideHidden) actions.toggleSide() } },
+          { label: t('스크립트'), icon: FileCode2, checked: !actions.sideHidden && ws.panel === 'scripts', onClick: () => { ws.setPanel('scripts'); if (actions.sideHidden) actions.toggleSide() } },
           { label: t('실행 기록'), icon: History, checked: !actions.sideHidden && ws.panel === 'history', onClick: () => { ws.setPanel('history'); if (actions.sideHidden) actions.toggleSide() } },
           { label: actions.sideHidden ? t('옆 칸 보이기') : t('옆 칸 숨기기'), icon: PanelLeft, hint: 'Ctrl+B', onClick: actions.toggleSide },
           'sep',
@@ -88,6 +115,8 @@ export function TitleBar({ actions }: { actions: ShellActions }) {
           { label: t('Windows 설정 따라가기'), checked: ws.settings.theme === 'system', onClick: () => void setTheme('system') },
           { label: t('밝게'), checked: ws.settings.theme === 'light', onClick: () => void setTheme('light') },
           { label: t('어둡게'), checked: ws.settings.theme === 'dark', onClick: () => void setTheme('dark') },
+          'sep',
+          { label: t('세션 관리자…'), icon: Activity, disabled: !here || ws.conn(here.connId)?.driver === 'sqlite', onClick: () => void withConn((h) => ui.open((close) => <SessionsDialog conn={ws.conn(h.connId)!} onClose={close} />)) },
         ]
       case 'sql':
         return [

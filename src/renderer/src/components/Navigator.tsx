@@ -1,22 +1,80 @@
 // 왼쪽 탐색기: 접속 → DB → (스키마) → 표·뷰 묶음 → 표 → 열·인덱스. 펼칠 때 읽고, 새로고침 전까지 기억
-import { useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import {
-  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, Plug, Plus,
-  RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download,
+  ChevronRight, ChevronsDownUp, Columns3, Copy, Database, DatabaseBackup, Eraser, Eye, FilePlay, ScrollText, FileCode2, FilePlus2, Folder, FolderTree, KeyRound, ListTree, LoaderCircle, Pencil, PencilRuler, PenLine, Plug, Plus, RefreshCw, Search, SquareTerminal, Table2, Trash2, Unplug, Upload, X, Download, Workflow, SquareFunction, Zap, ListOrdered, CalendarClock, Activity, FolderInput, FolderMinus,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { ConnectionInfo, DbObject, ObjectKind, TableRef } from '../../../shared/types'
-import { api, errorText, useColumns, useDatabases, useIndexes, useObjects, useRefreshConn, useSchemas } from '../api'
+import { dropExtraSql, objectSql, type ObjectAction } from '../../../shared/alter'
+import { dialectOf, EXTRA_KINDS, type ConnectionInfo, type DbObject, type ExtraKind, type ExtraObject, type ObjectKind, type TableRef } from '../../../shared/types'
+import { api, errorText, useColumns, useDatabases, useExtras, useIndexes, useObjects, useRefreshConn, useSchemas } from '../api'
 import { defaultContext, useWs } from '../ws'
 import { useUi, type MenuItem } from '../ui'
-import { t } from '../i18n'
+import { t, tk } from '../i18n'
 import { connSummary } from '../format'
 import { DriverBadge } from './DriverBadge'
 import { ImportDialog } from '../dialogs/ImportDialog'
 import { DumpDialog } from '../dialogs/DumpDialog'
 import { RunFileDialog } from '../dialogs/RunFileDialog'
+import { DdlDialog } from '../dialogs/DdlDialog'
+import { RenameDialog } from '../dialogs/RenameDialog'
+import { SessionsDialog } from '../dialogs/SessionsDialog'
+
+/** 표·뷰 이름 바꾸기·비우기·지우기: 실행할 SQL을 보여 주고 확인받은 뒤 실행. 열린 탭도 맞춘다 */
+function useObjectAction() {
+  const ws = useWs()
+  const ui = useUi()
+  const refresh = useRefreshConn()
+  return async (c: ConnectionInfo, ref: TableRef, kind: ObjectKind, action: ObjectAction) => {
+    let newName = ''
+    if (action === 'rename') {
+      const name = await new Promise<string | null>((resolve) => {
+        ui.open((close) => <RenameDialog title={kind === 'view' ? t('뷰 이름 바꾸기') : t('표 이름 바꾸기')} current={ref.table} onClose={() => { resolve(null); close() }} onSubmit={(v) => { resolve(v); close() }} />)
+      })
+      if (!name) return
+      newName = name
+    }
+    let statements: string[]
+    try {
+      statements = objectSql(dialectOf(c.driver), ref, kind, action, newName)
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+      return
+    }
+    const title = action === 'rename' ? (kind === 'view' ? t('뷰 이름 바꾸기') : t('표 이름 바꾸기')) : action === 'truncate' ? t('표 비우기') : kind === 'view' ? t('뷰 지우기') : t('표 지우기')
+    const warnings = action === 'truncate' ? [t('"{name}"의 모든 행을 지워요. 되돌릴 수 없어요.', { name: ref.table })]
+      : action === 'drop' ? [kind === 'view' ? t('뷰 "{name}"을(를) 지워요. 되돌릴 수 없어요.', { name: ref.table }) : t('표 "{name}"을(를) 지워요. 데이터도 함께 사라지고 되돌릴 수 없어요.', { name: ref.table })] : []
+    ui.open((close) => (
+      <DdlDialog title={title} driver={c.driver} statements={statements} warnings={warnings} production={c.production === true} danger={action !== 'rename'}
+        submitLabel={action === 'rename' ? t('이름 바꾸기') : action === 'truncate' ? t('비우기') : t('지우기')}
+        onClose={close}
+        onSubmit={async () => {
+          try {
+            await api.runDdl(c.id, ref.db, ref.schema, statements)
+          } catch (e) {
+            ui.notify(errorText(e), 'error')
+            return
+          }
+          close()
+          ui.notify(action === 'rename' ? t('이름을 바꿨어요: {name}', { name: newName }) : action === 'truncate' ? t('표를 비웠어요: {name}', { name: ref.table }) : t('지웠어요: {name}', { name: ref.table }), 'success')
+          refresh(c.id)
+          for (const tb of ws.tabs) {
+            if (tb.kind !== 'table' || tb.newTable || tb.connId !== c.id || tb.ref.db !== ref.db || tb.ref.schema !== ref.schema || tb.ref.table !== ref.table) continue
+            if (action === 'drop') void ws.closeTab(tb.id)
+            else if (action === 'rename') ws.updateTab(tb.id, { ref: { ...ref, table: newName } })
+          }
+        }}
+      />
+    ))
+  }
+}
 
 const EXPAND_KEY = 'dboard.tree.expanded'
+
+/** 들여쓰기: 줄 깊이 + 접속 폴더 안이면 한 칸 더 (--tree-indent) */
+const pad = (px: number): CSSProperties => ({ paddingLeft: `calc(${px}px + var(--tree-indent, 0px))` })
+
+const EXTRA_LABEL: Record<ExtraKind, string> = { procedure: tk('프로시저'), function: tk('함수'), trigger: tk('트리거'), sequence: tk('시퀀스'), event: tk('이벤트') }
+const EXTRA_ICON = { procedure: Workflow, function: SquareFunction, trigger: Zap, sequence: ListOrdered, event: CalendarClock }
 
 function loadExpanded(): Set<string> {
   try {
@@ -88,7 +146,7 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
   return (
     <div
       className={`tree-row ${ctx.selected === k ? 'sel' : ''} ${className ?? ''}`}
-      style={{ paddingLeft: 4 + depth * 16 }}
+      style={pad(4 + depth * 16)}
       role="treeitem"
       aria-expanded={expandable ? open : undefined}
       aria-selected={ctx.selected === k}
@@ -115,11 +173,11 @@ function Row({ depth, k, ctx, icon, label, extra, expandable, loading, onOpen, o
 }
 
 function Empty({ depth, children }: { depth: number; children: ReactNode }) {
-  return <div className="tree-empty" style={{ paddingLeft: 24 + depth * 16 }}>{children}</div>
+  return <div className="tree-empty" style={pad(24 + depth * 16)}>{children}</div>
 }
 
 function ErrorRow({ depth, error }: { depth: number; error: unknown }) {
-  return <div className="tree-empty error" style={{ paddingLeft: 24 + depth * 16 }} title={errorText(error)}>{errorText(error)}</div>
+  return <div className="tree-empty error" style={pad(24 + depth * 16)} title={errorText(error)}>{errorText(error)}</div>
 }
 
 function saveExpanded(n: Set<string>) {
@@ -200,6 +258,7 @@ export function Navigator() {
     if (!meta || !(await ws.ensureConnected(meta.connId))) return
     ws.openEditor(meta.connId, meta.db !== undefined ? { db: meta.db, schema: meta.schema ?? '' } : undefined)
   }
+  const folders = [...new Set(ws.connections.map((c) => c.folder ?? '').filter(Boolean))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   const collapseAll = () => {
     const n = new Set<string>()
     saveExpanded(n)
@@ -242,13 +301,40 @@ export function Navigator() {
             <button className="btn primary" onClick={() => ws.editConnection()}><Plus />{t('새 연결')}</button>
           </div>
         )}
-        {ws.connections.map((c) => <ConnNode key={c.id} c={c} ctx={ctx} />)}
+        {folders.map((f) => <ConnFolder key={f} name={f} conns={ws.connections.filter((c) => c.folder === f)} folders={folders} ctx={ctx} />)}
+        {ws.connections.filter((c) => !c.folder).map((c) => <ConnNode key={c.id} c={c} folders={folders} ctx={ctx} />)}
       </div>
     </div>
   )
 }
 
-function ConnNode({ c, ctx }: { c: ConnectionInfo; ctx: TreeCtx }) {
+/** 접속 폴더: 처음부터 펼쳐 두고 접은 것만 기억 */
+function ConnFolder({ name, conns, folders, ctx }: { name: string; conns: ConnectionInfo[]; folders: string[]; ctx: TreeCtx }) {
+  const ui = useUi()
+  const qc = useQueryClient()
+  const k = 'gc:' + name
+  const open = !ctx.expanded.has(k) || !!ctx.filter
+  const setFolder = async (folder: string) => {
+    try {
+      await api.setConnectionFolder(conns.map((c) => c.id), folder)
+      void qc.invalidateQueries({ queryKey: ['connections'] })
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+    }
+  }
+  const menu = (e: MouseEvent) => ui.menu(e, [
+    { label: t('폴더 이름 바꾸기…'), icon: PenLine, onClick: () => ui.open((close) => <RenameDialog title={t('폴더 이름 바꾸기')} current={name} onClose={close} onSubmit={(v) => { close(); void setFolder(v) }} />) },
+    { label: t('폴더 풀기'), icon: FolderMinus, onClick: () => void setFolder('') },
+  ])
+  return (
+    <>
+      <Row depth={0} k={k} ctx={ctx} open={open} onToggle={() => ctx.toggle(k)} icon={<Folder className="folder-icon" />} label={name} extra={<span className="count">{conns.length}</span>} expandable onMenu={menu} className="conn-folder" />
+      {open && <div style={{ '--tree-indent': '16px' } as CSSProperties}>{conns.map((c) => <ConnNode key={c.id} c={c} folders={folders} ctx={ctx} />)}</div>}
+    </>
+  )
+}
+
+function ConnNode({ c, folders, ctx }: { c: ConnectionInfo; folders: string[]; ctx: TreeCtx }) {
   const ws = useWs()
   const ui = useUi()
   const qc = useQueryClient()
@@ -277,9 +363,17 @@ function ConnNode({ c, ctx }: { c: ConnectionInfo; ctx: TreeCtx }) {
     isOn ? { label: t('연결 끊기'), icon: Unplug, onClick: () => void ws.disconnect(c.id) } : { label: t('연결'), icon: Plug, onClick: () => { ctx.toggle(k, true); void connect() } },
     { label: t('새 SQL 편집기'), icon: SquareTerminal, hint: 'Ctrl+]', onClick: async () => { if (await ws.ensureConnected(c.id)) ws.openEditor(c.id) } },
     isOn && { label: t('새로고침'), icon: RefreshCw, onClick: () => refresh(c.id) },
+    c.driver !== 'sqlite' && { label: t('세션 관리자…'), icon: Activity, onClick: async () => { if (await ws.ensureConnected(c.id)) ui.open((close) => <SessionsDialog conn={c} onClose={close} />) } },
     'sep',
     { label: t('고치기'), icon: Pencil, onClick: () => ws.editConnection(c) },
     { label: t('복제'), icon: Copy, onClick: async () => { await api.duplicateConnection(c.id); void qc.invalidateQueries({ queryKey: ['connections'] }) } },
+    { label: t('폴더로 옮기기…'), icon: FolderInput, onClick: () => ui.open((close) => (
+      <RenameDialog title={t('폴더로 옮기기')} label={t('폴더 이름 (비우면 폴더에서 빼기)')} current={c.folder ?? ''} allowEmpty suggestions={folders} onClose={close}
+        onSubmit={(v) => {
+          close()
+          void api.setConnectionFolder([c.id], v).then(() => qc.invalidateQueries({ queryKey: ['connections'] }), (err) => ui.notify(errorText(err), 'error'))
+        }} />
+    )) },
     { label: t('지우기'), icon: Trash2, danger: true, onClick: () => void remove() },
   ])
 
@@ -317,6 +411,7 @@ function DbNode({ c, db, hasSchemas, ctx }: { c: ConnectionInfo; db: string; has
   const def = defaultContext(c)
   const menu = (e: MouseEvent) => ui.menu(e, [
     { label: t('새 SQL 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db, schema: hasSchemas ? def.schema : '' }) },
+    !hasSchemas && { label: t('새 표…'), icon: Plus, disabled: c.readOnly === true, onClick: () => ws.openNewTable(c.id, db, '') },
     'sep',
     // 스키마가 있는 DB(PostgreSQL·SQL Server)는 스키마에서 덤프
     !hasSchemas && { label: t('DDL 내보내기…'), icon: ScrollText, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema="" content="structure" onClose={close} />) },
@@ -343,6 +438,7 @@ function SchemaNode({ c, db, schema, ctx }: { c: ConnectionInfo; db: string; sch
   const open = ctx.expanded.has(k)
   const menu = (e: MouseEvent) => ui.menu(e, [
     { label: t('새 SQL 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db, schema }) },
+    { label: t('새 표…'), icon: Plus, disabled: c.readOnly === true, onClick: () => ws.openNewTable(c.id, db, schema) },
     'sep',
     { label: t('DDL 내보내기…'), icon: ScrollText, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema={schema} content="structure" onClose={close} />) },
     { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={db} schema={schema} onClose={close} />) },
@@ -370,17 +466,104 @@ function ObjectFolders({ c, db, schema, depth, ctx }: { c: ConnectionInfo; db: s
     <>
       <Folder2 c={c} db={db} schema={schema} kind="table" items={tables} depth={depth} ctx={ctx} />
       <Folder2 c={c} db={db} schema={schema} kind="view" items={views} depth={depth} ctx={ctx} />
+      <ExtraFolders c={c} db={db} schema={schema} depth={depth} ctx={ctx} />
     </>
   )
 }
 
+/** 프로시저·함수·트리거·시퀀스·이벤트 묶음 (있는 것만) */
+function ExtraFolders({ c, db, schema, depth, ctx }: { c: ConnectionInfo; db: string; schema: string; depth: number; ctx: TreeCtx }) {
+  const extras = useExtras(c.id, db, schema, true)
+  if (extras.error) return <ErrorRow depth={depth} error={extras.error} />
+  const all = (extras.data ?? []).filter((x) => !ctx.filter || x.name.toLowerCase().includes(ctx.filter))
+  return (
+    <>
+      {EXTRA_KINDS.map((kind) => {
+        const items = all.filter((x) => x.kind === kind)
+        return items.length > 0 && <ExtraFolder key={kind} c={c} db={db} schema={schema} kind={kind} items={items} depth={depth} ctx={ctx} />
+      })}
+    </>
+  )
+}
+
+function ExtraFolder({ c, db, schema, kind, items, depth, ctx }: { c: ConnectionInfo; db: string; schema: string; kind: ExtraKind; items: ExtraObject[]; depth: number; ctx: TreeCtx }) {
+  const k = `x:${c.id}:${db}:${schema}:${kind}`
+  const open = ctx.expanded.has(k) || !!ctx.filter
+  return (
+    <>
+      <Row depth={depth} k={k} ctx={ctx} meta={{ connId: c.id, db, schema }} icon={<Folder className="folder-icon" />} label={t(EXTRA_LABEL[kind])} extra={<span className="count">{items.length}</span>} expandable />
+      {open && items.map((x) => <ExtraNode key={x.id + ':' + x.args} c={c} db={db} schema={schema} x={x} depth={depth + 1} ctx={ctx} />)}
+    </>
+  )
+}
+
+function ExtraNode({ c, db, schema, x, depth, ctx }: { c: ConnectionInfo; db: string; schema: string; x: ExtraObject; depth: number; ctx: TreeCtx }) {
+  const ws = useWs()
+  const ui = useUi()
+  const refresh = useRefreshConn()
+  const k = `xo:${c.id}:${db}:${schema}:${x.kind}:${x.id}`
+  const Icon = EXTRA_ICON[x.kind]
+  const openSource = async () => {
+    try {
+      const text = await api.objectSource(c.id, db, schema, x.kind, x.id)
+      ws.openEditor(c.id, { db, schema, text })
+    } catch (e) {
+      ui.notify(errorText(e), 'error')
+    }
+  }
+  const drop = () => {
+    const sql = dropExtraSql(dialectOf(c.driver), { db, schema }, x)
+    ui.open((close) => (
+      <DdlDialog title={t('지우기: {name}', { name: x.name })} driver={c.driver} statements={[sql]} production={c.production === true} danger submitLabel={t('지우기')}
+        warnings={[t('"{name}"을(를) 지워요. 되돌릴 수 없어요.', { name: x.name })]}
+        onClose={close}
+        onSubmit={async () => {
+          try {
+            await api.runDdl(c.id, db, schema, [sql])
+          } catch (e) {
+            ui.notify(errorText(e), 'error')
+            return
+          }
+          close()
+          ui.notify(t('지웠어요: {name}', { name: x.name }), 'success')
+          refresh(c.id)
+        }}
+      />
+    ))
+  }
+  const detail = x.kind === 'trigger' ? x.table : x.args ? `(${x.args})` : ''
+  return (
+    <Row
+      depth={depth}
+      k={k}
+      ctx={ctx}
+      meta={{ connId: c.id, db, schema }}
+      icon={<Icon className={`extra-icon ${x.kind}`} />}
+      label={x.name}
+      extra={detail && <span className="mono muted">{detail}</span>}
+      title={`${x.name}${detail ? ' ' + detail : ''}\n${t('더블클릭: 원본을 새 편집기에서 열기')}`}
+      expandable={false}
+      onDouble={() => void openSource()}
+      onMenu={(e) => ui.menu(e, [
+        { label: t('원본 보기 (새 편집기)'), icon: FileCode2, onClick: () => void openSource() },
+        { label: t('이름 복사'), icon: Copy, onClick: () => void api.copyText(x.name) },
+        'sep',
+        { label: t('지우기…'), icon: Trash2, danger: true, disabled: c.readOnly === true, onClick: drop },
+      ])}
+    />
+  )
+}
+
 function Folder2({ c, db, schema, kind, items, depth, ctx }: { c: ConnectionInfo; db: string; schema: string; kind: ObjectKind; items: DbObject[]; depth: number; ctx: TreeCtx }) {
+  const ws = useWs()
+  const ui = useUi()
   const k = `f:${c.id}:${db}:${schema}:${kind}`
+  const menu = kind === 'table' ? (e: MouseEvent) => ui.menu(e, [{ label: t('새 표…'), icon: Plus, disabled: c.readOnly === true, onClick: () => ws.openNewTable(c.id, db, schema) }]) : undefined
   // 찾기 중에는 묶음을 펼친 것으로
   const open = ctx.expanded.has(k) || (!!ctx.filter && items.length > 0)
   return (
     <>
-      <Row depth={depth} k={k} ctx={ctx} meta={{ connId: c.id, db, schema }} icon={<Folder className="folder-icon" />} label={kind === 'table' ? t('표') : t('뷰')} extra={<span className="count">{items.length}</span>} expandable />
+      <Row depth={depth} k={k} ctx={ctx} meta={{ connId: c.id, db, schema }} icon={<Folder className="folder-icon" />} label={kind === 'table' ? t('표') : t('뷰')} extra={<span className="count">{items.length}</span>} expandable onMenu={menu} />
       {open && items.map((o) => <ObjectNode key={o.name} c={c} ref2={{ db, schema, table: o.name }} obj={o} depth={depth + 1} ctx={ctx} />)}
     </>
   )
@@ -390,6 +573,7 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
   const ws = useWs()
   const ui = useUi()
   const qc = useQueryClient()
+  const objectAction = useObjectAction()
   const k = `t:${c.id}:${ref2.db}:${ref2.schema}:${obj.name}`
   const open = ctx.expanded.has(k)
   const isView = obj.kind === 'view'
@@ -402,6 +586,7 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
       { label: t('데이터 보기'), icon: Table2, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'data') },
       { label: t('구조 (열)'), icon: Columns3, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'columns') },
       { label: t('DDL 보기'), icon: FileCode2, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'ddl') },
+      !isView && { label: t('표 설계'), icon: PencilRuler, onClick: () => ws.openTable(c.id, ref2, obj.kind, 'design') },
       'sep',
       { label: t('SELECT 문으로 새 편집기'), icon: SquareTerminal, onClick: () => ws.openEditor(c.id, { db: ref2.db, schema: ref2.schema, text: selectSql() }) },
       !isView && { label: t('CSV 가져오기…'), icon: Upload, onClick: () => ui.open((close) => <ImportDialog connId={c.id} target={ref2} onClose={close} onDone={() => void qc.invalidateQueries({ queryKey: ['table-data', c.id] })} />) },
@@ -409,6 +594,10 @@ function ObjectNode({ c, ref2, obj, depth, ctx }: { c: ConnectionInfo; ref2: Tab
       { label: t('SQL 덤프 내보내기…'), icon: DatabaseBackup, onClick: () => ui.open((close) => <DumpDialog conn={c} db={ref2.db} schema={ref2.schema} only={obj.name} onClose={close} />) },
       'sep',
       { label: t('이름 복사'), icon: Copy, onClick: () => void api.copyText(obj.name) },
+      !(isView && c.driver === 'sqlite') && { label: t('이름 바꾸기…'), icon: PenLine, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'rename') },
+      !isView && { label: t('비우기…'), icon: Eraser, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'truncate') },
+      { label: t('지우기…'), icon: Trash2, danger: true, disabled: c.readOnly === true, onClick: () => void objectAction(c, ref2, obj.kind, 'drop') },
+      'sep',
       { label: t('새로고침'), icon: RefreshCw, onClick: () => {
         void qc.invalidateQueries({ queryKey: ['columns', c.id, ref2.db, ref2.schema, obj.name] })
         void qc.invalidateQueries({ queryKey: ['indexes', c.id, ref2.db, ref2.schema, obj.name] })
@@ -450,7 +639,7 @@ function TableChildren({ c, ref2, isView, depth, ctx }: { c: ConnectionInfo; ref
       <Row depth={depth} k={kc} ctx={ctx} meta={{ connId: c.id, db: ref2.db, schema: ref2.schema, table: ref2.table, kind: isView ? 'view' : 'table' }} open={colsOpen} onToggle={() => ctx.toggle(kc)} icon={<Columns3 />} label={t('열|column')} extra={cols.data && <span className="count">{cols.data.length}</span>} expandable loading={cols.isFetching} />
       {colsOpen && cols.error && <ErrorRow depth={depth + 1} error={cols.error} />}
       {colsOpen && cols.data?.map((col) => (
-        <div key={col.name} className="tree-row leaf" style={{ paddingLeft: 4 + (depth + 1) * 16 }} title={[col.type, col.nullable ? 'NULL' : 'NOT NULL', col.default !== null ? 'DEFAULT ' + col.default : '', col.comment].filter(Boolean).join(' · ')}>
+        <div key={col.name} className="tree-row leaf" style={pad(4 + (depth + 1) * 16)} title={[col.type, col.nullable ? 'NULL' : 'NOT NULL', col.default !== null ? 'DEFAULT ' + col.default : '', col.comment].filter(Boolean).join(' · ')}>
           <span className="tree-chev none" />
           <span className="tree-icon">{col.pk ? <KeyRound className="pk-icon" /> : <span className="col-dot" />}</span>
           <span className="tree-label ellipsis">{col.name}</span>
@@ -463,7 +652,7 @@ function TableChildren({ c, ref2, isView, depth, ctx }: { c: ConnectionInfo; ref
           {idxOpen && idx.error && <ErrorRow depth={depth + 1} error={idx.error} />}
           {idxOpen && idx.data?.length === 0 && <Empty depth={depth + 1}>{t('인덱스가 없어요')}</Empty>}
           {idxOpen && idx.data?.map((ix) => (
-            <div key={ix.name} className="tree-row leaf" style={{ paddingLeft: 4 + (depth + 1) * 16 }} title={ix.columns.join(', ')}>
+            <div key={ix.name} className="tree-row leaf" style={pad(4 + (depth + 1) * 16)} title={ix.columns.join(', ')}>
               <span className="tree-chev none" />
               <span className="tree-icon">{ix.primary ? <KeyRound className="pk-icon" /> : <FilePlus2 className="idx-icon" />}</span>
               <span className="tree-label ellipsis">{ix.name}</span>

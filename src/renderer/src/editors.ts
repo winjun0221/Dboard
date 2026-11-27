@@ -10,6 +10,8 @@ export interface EditorActions {
   commit(): void
   rollback(): void
   toggleManual(): void
+  /** SQL 파일로 저장 (as = 다른 이름으로) */
+  save(as: boolean): void
   /** 수동 커밋인지, 커밋하지 않은 문장 수 */
   manual: boolean
   pending: number

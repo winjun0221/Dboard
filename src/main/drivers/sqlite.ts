@@ -2,8 +2,9 @@
 import { Worker } from 'node:worker_threads'
 import { quoteIdent } from '../../shared/dialect'
 import { getLang, t } from '../../shared/i18n'
-import type { Cell, ColumnInfo, DbObject, StatementResult } from '../../shared/types'
-import { bool, groupColumns, groupForeignKeys, Session, str, type DriverModule, type OnColumns, type OnRows, type Rows } from './base'
+import { mask } from '../../shared/sql'
+import type { Cell, ColumnInfo, DbObject, StatementResult, TableDesign } from '../../shared/types'
+import { bool, fkAction, groupColumns, groupForeignKeys, Session, str, type DriverModule, type OnColumns, type OnRows, type Rows } from './base'
 import { dispatch, SqliteEngine, type EngineOpenOptions } from './sqlite-engine'
 
 /** 앱에서는 작업 스레드 코드(dist/main/sqlite-worker.cjs 내용)를 넣어 준다. null이면 같은 스레드에서 실행(테스트) */
@@ -233,5 +234,83 @@ export const sqliteDriver: DriverModule = {
       [db],
     )
     return groupColumns(r.rows)
+  },
+
+  sessions: null,
+
+  async extras(s, db) {
+    const r = await s.query(`SELECT name, tbl_name FROM ${q(db)}.sqlite_master WHERE type = 'trigger' ORDER BY name`)
+    return r.rows.map((x) => ({ kind: 'trigger' as const, name: str(x[0]), id: str(x[0]), table: str(x[1]), args: '' }))
+  },
+
+  async source(s, db, _schema, kind, id) {
+    const r = await s.query(`SELECT sql FROM ${q(db)}.sqlite_master WHERE type = ? AND name = ?`, [kind, id])
+    if (!r.rows.length) throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
+    return str(r.rows[0][0]).trim() + ';'
+  },
+
+  async design(s, ref) {
+    const master = await s.query(`SELECT type, name, sql FROM ${q(ref.db)}.sqlite_master WHERE tbl_name = ? AND sql IS NOT NULL`, [ref.table])
+    const create = str(master.rows.find((r) => str(r[0]) === 'table')?.[2])
+    if (!create) throw new Error(t('표를 찾지 못했어요: {name}', { name: ref.table }))
+    const masked = mask(create, 'sqlite')
+    const unsupported: string[] = []
+    if (/\bCHECK\s*\(/i.test(masked)) unsupported.push('CHECK')
+    if (/\bCOLLATE\b/i.test(masked)) unsupported.push('COLLATE')
+    if (/\bGENERATED\b|\bAS\s*\(/i.test(masked)) unsupported.push(t('계산 열'))
+    if (/\bON\s+CONFLICT\b/i.test(masked)) unsupported.push('ON CONFLICT')
+    if (/\bDEFERRABLE\b/i.test(masked)) unsupported.push('DEFERRABLE')
+    const close = masked.lastIndexOf(')')
+    const options = close >= 0 ? create.slice(close + 1).replace(/;\s*$/, '').trimEnd() : ''
+    const cols = await sqliteDriver.columns(s, ref)
+    const pk = await s.query('SELECT name FROM pragma_table_info(?, ?) WHERE pk > 0 ORDER BY pk', [ref.table, ref.db])
+    const primaryKey = pk.rows.map((r) => str(r[0]))
+    const autoinc = /\bAUTOINCREMENT\b/i.test(masked)
+    const list = await s.query('SELECT name, "unique", origin FROM pragma_index_list(?, ?)', [ref.table, ref.db])
+    const indexes = []
+    for (const row of list.rows) {
+      const name = str(row[0])
+      if (str(row[2]) === 'pk') continue
+      const ic = await s.query('SELECT name FROM pragma_index_info(?, ?) ORDER BY seqno', [name, ref.db])
+      const sql = str(master.rows.find((r) => str(r[0]) === 'index' && str(r[1]) === name)?.[2])
+      indexes.push({ name, columns: ic.rows.map((c) => str(c[0]) || t('(식)')), unique: bool(row[1]), orig: name, constraint: str(row[2]) === 'u' || undefined, sql: sql || undefined })
+    }
+    const fkRows = await s.query('SELECT id, seq, "table", "from", "to", on_update, on_delete FROM pragma_foreign_key_list(?, ?) ORDER BY id, seq', [ref.table, ref.db])
+    const fks = new Map<string, TableDesign['foreignKeys'][number]>()
+    for (const x of fkRows.rows) {
+      const id = str(x[0])
+      let to = str(x[4])
+      if (!to) {
+        const rp = await s.query('SELECT name FROM pragma_table_info(?, ?) WHERE pk > 0 ORDER BY pk', [str(x[2]), ref.db])
+        to = str(rp.rows[Number(x[1])]?.[0])
+      }
+      const fk = fks.get(id) ?? { name: '', columns: [], refSchema: '', refTable: str(x[2]), refColumns: [], onDelete: fkAction(str(x[6])), onUpdate: fkAction(str(x[5])), orig: '' }
+      fk.columns.push(str(x[3]))
+      fk.refColumns.push(to)
+      fks.set(id, fk)
+    }
+    // SQLite 외래 키는 이름이 없어서 차례 번호로 구별한다 (SQL에는 이름을 쓰지 않음)
+    const foreignKeys = [...fks.values()].map((f, i) => ({ ...f, name: `#${i + 1}`, orig: `#${i + 1}` }))
+    return {
+      name: ref.table,
+      comment: '',
+      columns: cols.map((c) => ({
+        name: c.name,
+        type: c.type,
+        nullable: c.nullable,
+        default: c.default ?? '',
+        autoIncrement: autoinc && c.autoIncrement,
+        comment: '',
+        generated: !!c.generated,
+        orig: c.name,
+      })),
+      primaryKey,
+      pkName: '',
+      indexes,
+      foreignKeys,
+      unsupported,
+      options,
+      triggers: master.rows.filter((r) => str(r[0]) === 'trigger').map((r) => str(r[2])),
+    }
   },
 }

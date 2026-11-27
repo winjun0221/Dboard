@@ -82,6 +82,7 @@ export function SettingsDialog({ initial, initialTab, onClose }: { initial: AppS
             <input type="number" min={10} max={10000} step={50} value={s.pageSize} onChange={(e) => set({ pageSize: Number(e.target.value) })} style={{ width: 120 }} />
           </Field>
           <Check checked={s.confirmDangerous} onChange={(v) => set({ confirmDangerous: v })}>{t('WHERE 없는 UPDATE·DELETE는 실행 전에 묻기')}</Check>
+          <Check checked={s.queryParams} onChange={(v) => set({ queryParams: v })}>{t('쿼리 변수(:이름)가 있으면 실행 전에 값 묻기')}</Check>
         </div>
       )}
       {tab === 'about' && (

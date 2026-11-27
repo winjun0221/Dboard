@@ -5,7 +5,7 @@ import { quoteIdent } from '../../shared/dialect'
 import { t } from '../../shared/i18n'
 import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult } from '../../shared/types'
 import { toCell, toParam } from '../values'
-import { bool, elapsed, groupColumns, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
+import { bool, elapsed, groupColumns, groupDesignFks, groupDesignIndexes, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
 const TYPE_NAMES: Record<number, string> = {
   0: 'decimal', 1: 'tinyint', 2: 'smallint', 3: 'int', 4: 'float', 5: 'double', 6: 'null', 7: 'timestamp', 8: 'bigint', 9: 'mediumint',
@@ -257,4 +257,108 @@ export const mysqlDriver: DriverModule = {
     const r = await s.query('SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 50000', [db])
     return groupColumns(r.rows)
   },
+
+  sessions: {
+    async list(s) {
+      const own = Number((await s.query('SELECT CONNECTION_ID()')).rows[0]?.[0])
+      const r = await s.query('SELECT ID, USER, DB, HOST, COMMAND, TIME, STATE, INFO FROM information_schema.PROCESSLIST ORDER BY ID')
+      return r.rows.map((x) => ({
+        id: str(x[0]),
+        user: str(x[1]),
+        db: str(x[2]),
+        host: str(x[3]),
+        app: '',
+        state: [str(x[4]), str(x[6])].filter(Boolean).join(' · '),
+        seconds: x[5] === null ? null : Number(x[5]),
+        query: str(x[7]),
+        own: Number(x[0]) === own,
+      }))
+    },
+    async kill(s, id, queryOnly) {
+      if (!/^\d+$/.test(id)) throw new Error(t('잘못된 요청'))
+      await s.exec(`KILL ${queryOnly ? 'QUERY ' : ''}${id}`)
+    },
+  },
+
+  async extras(s, db) {
+    const routines = await s.query('SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? ORDER BY ROUTINE_NAME', [db])
+    const triggers = await s.query('SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME', [db])
+    const events = await s.query('SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME', [db]).catch(() => ({ rows: [] as Cell[][] }))
+    return [
+      ...routines.rows.map((x) => ({ kind: str(x[1]).toUpperCase() === 'PROCEDURE' ? 'procedure' as const : 'function' as const, name: str(x[0]), id: str(x[0]), table: '', args: '' })),
+      ...triggers.rows.map((x) => ({ kind: 'trigger' as const, name: str(x[0]), id: str(x[0]), table: str(x[1]), args: '' })),
+      ...events.rows.map((x) => ({ kind: 'event' as const, name: str(x[0]), id: str(x[0]), table: '', args: '' })),
+    ]
+  },
+
+  async source(s, db, _schema, kind, id) {
+    if (kind === 'sequence') throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
+    const word = { procedure: 'PROCEDURE', function: 'FUNCTION', trigger: 'TRIGGER', event: 'EVENT' }[kind]
+    const r = await s.query(`SHOW CREATE ${word} ${quoteIdent('mysql', db)}.${quoteIdent('mysql', id)}`)
+    // 원본 칸: 프로시저·함수·트리거는 세 번째, 이벤트는 네 번째. 권한이 없으면 NULL
+    const text = r.rows[0]?.[kind === 'event' ? 3 : 2]
+    if (text === null || text === undefined) throw new Error(t('원본을 볼 수 없어요 (권한이 없거나 암호화된 개체예요)'))
+    return str(text).trim() + ';'
+  },
+
+  async design(s, ref) {
+    const maria = /mariadb/i.test(str((await s.query('SELECT VERSION()')).rows[0]?.[0]))
+    const tb = await s.query('SELECT TABLE_COMMENT, TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [ref.db, ref.table])
+    if (!tb.rows.length) throw new Error(t('표를 찾지 못했어요: {name}', { name: ref.table }))
+    const tableCollation = str(tb.rows[0][1])
+    const cols = await s.query(
+      'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, COLUMN_COMMENT, DATA_TYPE, COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION',
+      [ref.db, ref.table],
+    )
+    const stats = await s.query(
+      'SELECT INDEX_NAME, NON_UNIQUE = 0, COLUMN_NAME, 0 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX',
+      [ref.db, ref.table],
+    )
+    const fks = await s.query(
+      `SELECT k.CONSTRAINT_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE
+       FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r
+         ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME
+       WHERE k.TABLE_SCHEMA = ? AND k.TABLE_NAME = ? AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION`,
+      [ref.db, ref.table],
+    )
+    return {
+      name: ref.table,
+      comment: str(tb.rows[0][0]),
+      columns: cols.rows.map((x) => {
+        const extra = str(x[4])
+        const collation = str(x[7])
+        const onUpdate = /\bon update ([\w()]+)/i.exec(extra)?.[1]
+        return {
+          name: str(x[0]),
+          type: str(x[1]),
+          nullable: bool(x[2]),
+          default: mysqlDefault(x[3], extra, str(x[6]), maria),
+          autoIncrement: /auto_increment/i.test(extra),
+          comment: str(x[5]),
+          generated: /\b(VIRTUAL|STORED) GENERATED\b/i.test(extra),
+          orig: str(x[0]),
+          ...(collation && collation !== tableCollation ? { collation } : {}),
+          ...(onUpdate ? { onUpdate } : {}),
+        }
+      }),
+      primaryKey: stats.rows.filter((x) => str(x[0]) === 'PRIMARY').map((x) => str(x[2])),
+      pkName: '',
+      indexes: groupDesignIndexes(stats.rows.filter((x) => str(x[0]) !== 'PRIMARY'), t('(식)')),
+      foreignKeys: groupDesignFks(fks.rows),
+      unsupported: [],
+    }
+  },
+}
+
+const NUMERIC_TYPES = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|bit|bool|boolean|year)$/i
+
+/** information_schema의 기본값 → SQL 식. MariaDB는 이미 SQL 식('글자', current_timestamp()), MySQL은 글자 그대로라 따옴표를 붙인다 */
+export function mysqlDefault(def: Cell, extra: string, dataType: string, maria: boolean): string {
+  if (def === null || typeof def === 'object') return ''
+  const v = String(def)
+  if (maria) return v === 'NULL' ? '' : v
+  if (/^CURRENT_TIMESTAMP(\(\d*\))?$/i.test(v) && /time|date/i.test(dataType)) return v
+  if (/DEFAULT_GENERATED/i.test(extra)) return `(${v})`
+  if (NUMERIC_TYPES.test(dataType)) return v
+  return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
 }

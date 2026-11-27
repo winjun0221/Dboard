@@ -5,7 +5,7 @@ import { quoteIdent } from '../../shared/dialect'
 import { t } from '../../shared/i18n'
 import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult, TableRef } from '../../shared/types'
 import { toCell, toParam } from '../values'
-import { bool, elapsed, groupColumns, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
+import { bool, elapsed, groupColumns, groupDesignFks, groupDesignIndexes, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
 /**
  * 값 변환: 참·거짓과 작은 정수·실수만 JS 값으로, 나머지(날짜·bigint·numeric·json·배열 등)는 DB가 준 글자 그대로.
@@ -347,5 +347,128 @@ export const postgresDriver: DriverModule = {
       [schema],
     )
     return groupColumns(r.rows)
+  },
+
+  sessions: {
+    async list(s) {
+      const r = await s.query(
+        `SELECT pid::text, COALESCE(usename, ''), COALESCE(datname, ''), COALESCE(client_addr::text, client_hostname, ''), COALESCE(application_name, ''),
+           COALESCE(state, ''), EXTRACT(EPOCH FROM now() - COALESCE(CASE WHEN state = 'active' THEN query_start END, state_change, backend_start))::bigint,
+           COALESCE(query, ''), pid = pg_backend_pid()
+         FROM pg_stat_activity WHERE backend_type = 'client backend' ORDER BY pid`,
+      )
+      return r.rows.map((x) => ({ id: str(x[0]), user: str(x[1]), db: str(x[2]), host: str(x[3]), app: str(x[4]), state: str(x[5]), seconds: x[6] === null ? null : Number(x[6]), query: str(x[7]), own: bool(x[8]) }))
+    },
+    async kill(s, id, queryOnly) {
+      if (!/^\d+$/.test(id)) throw new Error(t('잘못된 요청'))
+      const r = await s.query(`SELECT ${queryOnly ? 'pg_cancel_backend' : 'pg_terminate_backend'}($1::int)`, [Number(id)])
+      if (!bool(r.rows[0]?.[0])) throw new Error(t('세션을 찾지 못했거나 권한이 없어요'))
+    },
+  },
+
+  async extras(s, _db, schema) {
+    // 확장 기능이 넣은 함수는 빼고. prokind: f 함수, p 프로시저 (PostgreSQL 11+)
+    const fn = await s.query(
+      `SELECT p.oid::text, p.proname, pg_get_function_identity_arguments(p.oid), p.prokind
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = $1 AND p.prokind IN ('f', 'p')
+         AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+       ORDER BY p.proname, 3`,
+      [schema],
+    )
+    const tr = await s.query(
+      `SELECT t.oid::text, t.tgname, c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1 AND NOT t.tgisinternal ORDER BY t.tgname`,
+      [schema],
+    )
+    const sq = await s.query(
+      `SELECT c.oid::text, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind = 'S' ORDER BY c.relname`,
+      [schema],
+    )
+    return [
+      ...fn.rows.map((x) => ({ kind: str(x[3]) === 'p' ? 'procedure' as const : 'function' as const, name: str(x[1]), id: str(x[0]), table: '', args: str(x[2]) })),
+      ...tr.rows.map((x) => ({ kind: 'trigger' as const, name: str(x[1]), id: str(x[0]), table: str(x[2]), args: '' })),
+      ...sq.rows.map((x) => ({ kind: 'sequence' as const, name: str(x[1]), id: str(x[0]), table: '', args: '' })),
+    ]
+  },
+
+  async source(s, _db, _schema, kind, id) {
+    if (!/^\d+$/.test(id)) throw new Error(t('잘못된 요청'))
+    if (kind === 'procedure' || kind === 'function') {
+      const r = await s.query('SELECT pg_get_functiondef($1::oid)', [id])
+      return str(r.rows[0]?.[0]).trim() + ';'
+    }
+    if (kind === 'trigger') {
+      const r = await s.query('SELECT pg_get_triggerdef($1::oid, true)', [id])
+      return str(r.rows[0]?.[0]).trim() + ';'
+    }
+    if (kind === 'sequence') {
+      const r = await s.query(
+        `SELECT n.nspname, c.relname, format_type(q.seqtypid, NULL), q.seqstart::text, q.seqincrement::text, q.seqmin::text, q.seqmax::text, q.seqcache::text, q.seqcycle
+         FROM pg_sequence q JOIN pg_class c ON c.oid = q.seqrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE q.seqrelid = $1::oid`,
+        [id],
+      )
+      const x = r.rows[0]
+      if (!x) throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
+      const name = `${quoteIdent('postgres', str(x[0]))}.${quoteIdent('postgres', str(x[1]))}`
+      return `CREATE SEQUENCE ${name} AS ${str(x[2])} START WITH ${str(x[3])} INCREMENT BY ${str(x[4])} MINVALUE ${str(x[5])} MAXVALUE ${str(x[6])} CACHE ${str(x[7])}${bool(x[8]) ? ' CYCLE' : ' NO CYCLE'};`
+    }
+    throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
+  },
+
+  async design(s, ref) {
+    const oid = await tableOid(s, ref)
+    const cols = await pgColumns(s, ref)
+    const pk = await s.query(
+      `SELECT c.conname, a.attname FROM pg_constraint c CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(col, n)
+       JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.col WHERE c.conrelid = $1::oid AND c.contype = 'p' ORDER BY k.n`,
+      [oid],
+    )
+    // 기본 키·배제 제약의 인덱스는 빼고, UNIQUE 제약은 제약으로 표시. 식·조건 인덱스는 원래 문장을 같이
+    const ix = await s.query(
+      `SELECT ic.relname, i.indisunique, a.attname, EXISTS (SELECT 1 FROM pg_constraint u WHERE u.conindid = i.indexrelid AND u.contype = 'u'),
+         CASE WHEN i.indexprs IS NOT NULL OR i.indpred IS NOT NULL THEN pg_get_indexdef(i.indexrelid) END
+       FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(col, n)
+       LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.col AND k.col > 0
+       WHERE i.indrelid = $1::oid AND NOT i.indisprimary AND k.n <= i.indnkeyatts
+         AND NOT EXISTS (SELECT 1 FROM pg_constraint x WHERE x.conindid = i.indexrelid AND x.contype NOT IN ('u'))
+       ORDER BY ic.relname, k.n`,
+      [oid],
+    )
+    const indexes = groupDesignIndexes(ix.rows, t('(식)'))
+    for (const r of ix.rows) {
+      const found = indexes.find((i) => i.name === str(r[0]))
+      if (found && r[4] !== null) found.sql = str(r[4])
+    }
+    const fks = await s.query(
+      `SELECT c.conname, a.attname, rn.nspname, rc.relname, ra.attname, c.confupdtype, c.confdeltype
+       FROM pg_constraint c
+       JOIN pg_class rc ON rc.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+       CROSS JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS k(col, refcol, n)
+       JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.col
+       JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = k.refcol
+       WHERE c.contype = 'f' AND c.conrelid = $1::oid ORDER BY c.conname, k.n`,
+      [oid],
+    )
+    const tc = await s.query(`SELECT obj_description($1::oid, 'pg_class')`, [oid])
+    return {
+      name: ref.table,
+      comment: str(tc.rows[0]?.[0]),
+      columns: cols.map((c) => ({
+        name: c.name,
+        type: c.type,
+        nullable: c.nullable,
+        default: c.identity || c.generated ? '' : c.default ?? '',
+        autoIncrement: c.identity !== '',
+        comment: c.comment,
+        generated: !!c.generated,
+        orig: c.name,
+      })),
+      primaryKey: pk.rows.map((r) => str(r[1])),
+      pkName: str(pk.rows[0]?.[0]),
+      indexes,
+      foreignKeys: groupDesignFks(fks.rows),
+      unsupported: [],
+    }
   },
 }

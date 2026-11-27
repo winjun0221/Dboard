@@ -1,7 +1,7 @@
 // 작업 공간 상태: 접속 목록·연결 상태·열린 탭(편집기·표). 탭과 편집기 글은 localStorage에 기억(다시 켜도 그대로)
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { AppSettings, ConnectionInfo, DriverKind, ObjectKind, SecretsInput, TableRef } from '../../shared/types'
+import type { AppSettings, ConnectionInfo, DriverKind, ObjectKind, SecretsInput, SqlFile, TableRef } from '../../shared/types'
 import { api, DEFAULT_SETTINGS, errorText, useConnections, useSettings } from './api'
 import { useUi } from './ui'
 import { t } from './i18n'
@@ -9,13 +9,13 @@ import { randomKey } from './format'
 import { PasswordDialog } from './dialogs/PasswordDialog'
 import { ConnectionDialog } from './dialogs/ConnectionDialog'
 
-export type TableSub = 'data' | 'columns' | 'indexes' | 'ddl'
-/** manual: 수동 커밋 (없으면 접속이 운영 DB일 때 켜짐) */
-export type EditorTab = { kind: 'editor'; id: string; connId: string; db: string; schema: string; title: string; manual?: boolean }
-/** filter·filterSeq: 외래 키 따라가기로 열 때 처음 조건 (seq가 바뀌면 다시 건다) */
-export type TableTab = { kind: 'table'; id: string; connId: string; ref: TableRef; objKind: ObjectKind; sub: TableSub; filter?: string; filterSeq?: number }
+export type TableSub = 'data' | 'columns' | 'indexes' | 'ddl' | 'design'
+/** manual: 수동 커밋 (없으면 접속이 운영 DB일 때 켜짐). file: 연결된 .sql 파일, modified: 파일에 저장하지 않은 고침 */
+export type EditorTab = { kind: 'editor'; id: string; connId: string; db: string; schema: string; title: string; manual?: boolean; file?: string; modified?: boolean }
+/** filter·filterSeq: 외래 키 따라가기로 열 때 처음 조건 (seq가 바뀌면 다시 건다). newTable: 아직 만들지 않은 새 표(설계만) */
+export type TableTab = { kind: 'table'; id: string; connId: string; ref: TableRef; objKind: ObjectKind; sub: TableSub; filter?: string; filterSeq?: number; newTable?: boolean }
 export type Tab = EditorTab | TableTab
-export type Panel = 'nav' | 'history'
+export type Panel = 'nav' | 'history' | 'scripts'
 
 interface Ws {
   connections: ConnectionInfo[]
@@ -29,8 +29,12 @@ interface Ws {
   setActive(id: string): void
   closeTab(id: string): Promise<void>
   closeOthers(id: string): void
-  openEditor(connId: string, o?: { db?: string; schema?: string; text?: string }): void
+  openEditor(connId: string, o?: { db?: string; schema?: string; text?: string; file?: string; title?: string }): void
+  /** .sql 파일을 편집기로 (이미 열려 있으면 그 탭) — 마지막으로 쓴 접속으로 */
+  openScript(f: SqlFile): void
   openTable(connId: string, ref: TableRef, kind: ObjectKind, sub?: TableSub, filter?: string): void
+  /** 새 표 설계 탭 */
+  openNewTable(connId: string, db: string, schema: string): void
   updateTab(id: string, patch: Partial<EditorTab> | Partial<TableTab>): void
   /** 탭 순서 바꾸기 (끌어 놓기) */
   reorder(ids: string[]): void
@@ -222,13 +226,13 @@ export function WsProvider({ children }: { children: ReactNode }) {
     setActiveState(id)
   }, [tabs])
 
-  const openEditor = useCallback((connId: string, o: { db?: string; schema?: string; text?: string } = {}) => {
+  const openEditor = useCallback((connId: string, o: { db?: string; schema?: string; text?: string; file?: string; title?: string } = {}) => {
     const c = connections.find((x) => x.id === connId)
     if (!c) return
     const def = defaultContext(c)
     const id = 'ed-' + randomKey()
-    seq.current += 1
-    const tab: EditorTab = { kind: 'editor', id, connId, db: o.db ?? def.db, schema: o.schema ?? def.schema, title: t('SQL {n}', { n: seq.current }) }
+    if (!o.title) seq.current += 1
+    const tab: EditorTab = { kind: 'editor', id, connId, db: o.db ?? def.db, schema: o.schema ?? def.schema, title: o.title ?? t('SQL {n}', { n: seq.current }), ...(o.file ? { file: o.file } : {}) }
     if (o.text) {
       try {
         localStorage.setItem(textKey(id), o.text)
@@ -241,8 +245,23 @@ export function WsProvider({ children }: { children: ReactNode }) {
     setLastConnId(connId)
   }, [connections])
 
+  const openScript = useCallback((f: SqlFile) => {
+    const found = tabs.find((x) => x.kind === 'editor' && !!x.file && x.file.toLowerCase() === f.path.toLowerCase())
+    if (found) {
+      setActiveState(found.id)
+      return
+    }
+    const cur = tabs.find((x) => x.id === active)
+    const connId = cur?.connId ?? lastConnId ?? connections[0]?.id
+    if (!connId) {
+      ui.notify(t('먼저 접속 정보를 만들어 주세요'), 'warn')
+      return
+    }
+    openEditor(connId, { text: f.text, file: f.path, title: f.name })
+  }, [tabs, active, lastConnId, connections, openEditor, ui])
+
   const openTable = useCallback((connId: string, ref: TableRef, kind: ObjectKind, sub: TableSub = 'data', filter?: string) => {
-    const found = tabs.find((x) => x.kind === 'table' && x.connId === connId && x.ref.db === ref.db && x.ref.schema === ref.schema && x.ref.table === ref.table)
+    const found = tabs.find((x) => x.kind === 'table' && !x.newTable && x.connId === connId && x.ref.db === ref.db && x.ref.schema === ref.schema && x.ref.table === ref.table)
     const f = filter === undefined ? {} : { filter, filterSeq: Date.now() }
     if (found) {
       setTabs((list) => list.map((x) => (x.id === found.id ? ({ ...x, sub, ...f } as Tab) : x)))
@@ -254,6 +273,13 @@ export function WsProvider({ children }: { children: ReactNode }) {
     }
     setLastConnId(connId)
   }, [tabs])
+
+  const openNewTable = useCallback((connId: string, db: string, schema: string) => {
+    const id = 'tb-' + randomKey()
+    setTabs((list) => [...list, { kind: 'table', id, connId, ref: { db, schema, table: '' }, objKind: 'table', sub: 'design', newTable: true }])
+    setActiveState(id)
+    setLastConnId(connId)
+  }, [])
 
   const updateTab = useCallback((id: string, patch: Partial<EditorTab> | Partial<TableTab>) => {
     setTabs((list) => list.map((x) => (x.id === id ? ({ ...x, ...patch } as Tab) : x)))
@@ -288,8 +314,8 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
   const ws = useMemo<Ws>(() => ({
     connections, conn, connected, connecting, ensureConnected, disconnect, tabs, active, setActive, closeTab, closeOthers,
-    openEditor, openTable, updateTab, reorder, editConnection, settings, panel, setPanel, lastConnId,
-  }), [connections, conn, connected, connecting, ensureConnected, disconnect, tabs, active, setActive, closeTab, closeOthers, openEditor, openTable, updateTab, reorder, editConnection, settings, panel, lastConnId])
+    openEditor, openScript, openTable, openNewTable, updateTab, reorder, editConnection, settings, panel, setPanel, lastConnId,
+  }), [connections, conn, connected, connecting, ensureConnected, disconnect, tabs, active, setActive, closeTab, closeOthers, openEditor, openScript, openTable, openNewTable, updateTab, reorder, editConnection, settings, panel, lastConnId])
 
   return <WsContext.Provider value={ws}>{children}</WsContext.Provider>
 }

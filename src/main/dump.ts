@@ -251,3 +251,18 @@ export async function runSqlFile(s: Session, d: Dialect, file: string): Promise<
   return { statements: list.length, ms: Math.round(performance.now() - t0) }
 }
 
+/** 구조를 바꾸는 문장들을 차례로 (표 설계·이름 바꾸기·지우기). 오류가 나면 되돌리기를 시도하고 몇 번째 문장인지 알린다 */
+export async function runStatements(s: Session, d: Dialect, list: string[]): Promise<void> {
+  // 다른 연결이 표를 잡고 있으면 한없이 기다리지 않게
+  const wait = { postgres: "SET lock_timeout = '15s'", mysql: 'SET SESSION lock_wait_timeout = 15', mssql: 'SET LOCK_TIMEOUT 15000', sqlite: '' }[d]
+  if (wait) await s.exec(wait).catch(() => undefined)
+  for (let i = 0; i < list.length; i++) {
+    try {
+      await s.run(list[i], 1)
+    } catch (e) {
+      await s.run(d === 'mssql' ? 'IF @@TRANCOUNT > 0 ROLLBACK' : 'ROLLBACK', 1).catch(() => undefined)
+      const sql = list[i].length > 300 ? list[i].slice(0, 300) + '…' : list[i]
+      throw new Error(t('{n}번째 문장에서 멈췄어요. 앞의 {done}개는 실행됐어요(트랜잭션 안이면 되돌렸어요).\n{sql}\n{error}', { n: i + 1, done: i, sql, error: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+}

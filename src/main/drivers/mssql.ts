@@ -5,7 +5,7 @@ import { t } from '../../shared/i18n'
 import { firstKeyword, splitSql } from '../../shared/sql'
 import type { Cell, ColumnInfo, DbObject, ResultColumn, StatementResult, TableRef } from '../../shared/types'
 import { formatUtc, toCell, toParam } from '../values'
-import { bool, elapsed, groupColumns, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
+import { bool, elapsed, groupColumns, groupDesignFks, groupDesignIndexes, groupForeignKeys, groupIndexes, Session, str, type DriverModule, type OnColumns, type OnRows, type OpenOptions, type Rows } from './base'
 
 type Meta = { colName: string; type: { name: string }; dataLength?: number; precision?: number; scale?: number }
 type ColValue = { value: unknown; metadata: Meta }
@@ -417,5 +417,107 @@ export const mssqlDriver: DriverModule = {
       [schema || 'dbo'],
     )
     return groupColumns(r.rows)
+  },
+
+  sessions: {
+    async list(s) {
+      const r = await s.query(
+        `SELECT CAST(s.session_id AS nvarchar(10)), ISNULL(s.login_name, ''), ISNULL(DB_NAME(s.database_id), ''), ISNULL(s.host_name, ''), ISNULL(s.program_name, ''),
+           ISNULL(r.status, s.status), DATEDIFF(SECOND, ISNULL(r.start_time, s.last_request_start_time), GETDATE()), ISNULL(t.text, ''),
+           CASE WHEN s.session_id = @@SPID THEN 1 ELSE 0 END
+         FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id
+         OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+         WHERE s.is_user_process = 1 ORDER BY s.session_id`,
+      )
+      return r.rows.map((x) => ({ id: str(x[0]), user: str(x[1]), db: str(x[2]), host: str(x[3]), app: str(x[4]), state: str(x[5]), seconds: x[6] === null ? null : Number(x[6]), query: str(x[7]), own: bool(x[8]) }))
+    },
+    async kill(s, id, queryOnly) {
+      if (queryOnly) throw new Error(t('SQL Server는 쿼리만 취소할 수 없어요. 세션을 끊어 주세요.'))
+      if (!/^\d+$/.test(id)) throw new Error(t('잘못된 요청'))
+      await s.exec(`KILL ${Number(id)}`)
+    },
+  },
+
+  async extras(s, db, schema) {
+    const r = await s.query(
+      `SELECT CAST(o.object_id AS nvarchar(20)), o.name, RTRIM(o.type), ISNULL(p.name, '')
+       FROM ${sys(db, 'objects')} o JOIN ${sys(db, 'schemas')} s ON s.schema_id = o.schema_id
+       LEFT JOIN ${sys(db, 'objects')} p ON p.object_id = o.parent_object_id
+       WHERE s.name = @p1 AND o.type IN ('P', 'FN', 'IF', 'TF', 'TR', 'SO') AND o.is_ms_shipped = 0 ORDER BY o.name`,
+      [schema || 'dbo'],
+    )
+    const kindOf = (type: string) => (type === 'P' ? 'procedure' : type === 'TR' ? 'trigger' : type === 'SO' ? 'sequence' : 'function') as 'procedure' | 'trigger' | 'sequence' | 'function'
+    return r.rows.map((x) => ({ kind: kindOf(str(x[2])), name: str(x[1]), id: str(x[0]), table: str(x[3]), args: '' }))
+  },
+
+  async source(s, db, schema, kind, id) {
+    if (!/^-?\d+$/.test(id)) throw new Error(t('잘못된 요청'))
+    if (kind === 'sequence') {
+      const r = await s.query(
+        `SELECT q.name, TYPE_NAME(q.system_type_id), CAST(q.start_value AS nvarchar(50)), CAST(q.increment AS nvarchar(50)), CAST(q.minimum_value AS nvarchar(50)),
+           CAST(q.maximum_value AS nvarchar(50)), q.is_cycling FROM ${sys(db, 'sequences')} q WHERE q.object_id = @p1`,
+        [Number(id)],
+      )
+      const x = r.rows[0]
+      if (!x) throw new Error(t('개체를 찾지 못했어요: {name}', { name: id }))
+      return `CREATE SEQUENCE ${q(schema || 'dbo')}.${q(str(x[0]))} AS ${str(x[1])} START WITH ${str(x[2])} INCREMENT BY ${str(x[3])} MINVALUE ${str(x[4])} MAXVALUE ${str(x[5])}${bool(x[6]) ? ' CYCLE' : ' NO CYCLE'};`
+    }
+    const r = await s.query(`SELECT m.definition FROM ${sys(db, 'sql_modules')} m WHERE m.object_id = @p1`, [Number(id)])
+    const text = r.rows[0]?.[0]
+    if (text === null || text === undefined) throw new Error(t('원본을 볼 수 없어요 (권한이 없거나 암호화된 개체예요)'))
+    return str(text).trim()
+  },
+
+  async design(s, ref) {
+    const db = ref.db
+    const schema = ref.schema || 'dbo'
+    const tb = await s.query(
+      `SELECT CAST(ISNULL(ep.value, '') AS nvarchar(4000)) FROM ${sys(db, 'objects')} o JOIN ${sys(db, 'schemas')} s ON s.schema_id = o.schema_id
+       LEFT JOIN ${sys(db, 'extended_properties')} ep ON ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.class = 1 AND ep.name = 'MS_Description'
+       WHERE s.name = @p1 AND o.name = @p2 AND o.type = 'U'`,
+      [schema, ref.table],
+    )
+    if (!tb.rows.length) throw new Error(t('표를 찾지 못했어요: {name}', { name: ref.table }))
+    const cols = await columnRows(s, ref)
+    const pk = (await mssqlDriver.indexes(s, ref)).find((i) => i.primary)
+    const ix = await s.query(
+      `SELECT i.name, i.is_unique, col.name, i.is_unique_constraint
+       FROM ${sys(db, 'indexes')} i JOIN ${sys(db, 'index_columns')} ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+       JOIN ${sys(db, 'columns')} col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+       JOIN ${sys(db, 'objects')} o ON o.object_id = i.object_id JOIN ${sys(db, 'schemas')} s ON s.schema_id = o.schema_id
+       WHERE s.name = @p1 AND o.name = @p2 AND i.name IS NOT NULL AND i.is_primary_key = 0 AND ic.is_included_column = 0
+       ORDER BY i.name, ic.key_ordinal`,
+      [schema, ref.table],
+    )
+    const fks = await s.query(
+      `SELECT fk.name, pc.name, rs.name, rt.name, rc.name, fk.update_referential_action_desc, fk.delete_referential_action_desc
+       FROM ${sys(db, 'foreign_keys')} fk
+       JOIN ${sys(db, 'foreign_key_columns')} fkc ON fkc.constraint_object_id = fk.object_id
+       JOIN ${sys(db, 'objects')} t ON t.object_id = fk.parent_object_id JOIN ${sys(db, 'schemas')} s ON s.schema_id = t.schema_id
+       JOIN ${sys(db, 'columns')} pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+       JOIN ${sys(db, 'objects')} rt ON rt.object_id = fkc.referenced_object_id JOIN ${sys(db, 'schemas')} rs ON rs.schema_id = rt.schema_id
+       JOIN ${sys(db, 'columns')} rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+       WHERE s.name = @p1 AND t.name = @p2 ORDER BY fk.name, fkc.constraint_column_id`,
+      [schema, ref.table],
+    )
+    return {
+      name: ref.table,
+      comment: str(tb.rows[0][0]),
+      columns: cols.rows.map((x) => ({
+        name: str(x[0]),
+        type: sqlType(str(x[1]), Number(x[2]), Number(x[3]), Number(x[4])),
+        nullable: bool(x[5]),
+        default: x[6] === null ? '' : str(x[6]),
+        autoIncrement: bool(x[8]),
+        comment: str(x[9]),
+        generated: bool(x[12]),
+        orig: str(x[0]),
+      })),
+      primaryKey: pk?.columns ?? [],
+      pkName: pk?.name ?? '',
+      indexes: groupDesignIndexes(ix.rows, t('(식)')),
+      foreignKeys: groupDesignFks(fks.rows),
+      unsupported: [],
+    }
   },
 }

@@ -45,6 +45,8 @@ export interface ConnectionConfig {
   production?: boolean
   /** 읽기 전용: 바꾸는 문장·데이터 고치기·가져오기를 막는다 (MySQL·PostgreSQL·SQLite는 서버 설정으로도) */
   readOnly?: boolean
+  /** 탐색기에서 묶어 보여 줄 폴더 ('' = 없음) */
+  folder?: string
 }
 
 /** 화면이 보내는 비밀 값. 없는 칸(undefined)은 저장된 값을 그대로 쓴다. 화면으로는 절대 돌려주지 않는다 */
@@ -120,6 +122,21 @@ export interface DbObject {
   comment: string
 }
 
+/** 표·뷰 말고 탐색기에 보여 줄 개체 */
+export type ExtraKind = 'procedure' | 'function' | 'trigger' | 'sequence' | 'event'
+export const EXTRA_KINDS: readonly ExtraKind[] = ['procedure', 'function', 'trigger', 'sequence', 'event']
+
+export interface ExtraObject {
+  kind: ExtraKind
+  name: string
+  /** 원본을 찾을 때 쓰는 값 (PostgreSQL·SQL Server는 oid·object_id, 나머지는 이름) */
+  id: string
+  /** 트리거가 걸린 표 */
+  table: string
+  /** PostgreSQL 함수 인자 (같은 이름 함수 구별·지울 때) */
+  args: string
+}
+
 export interface ColumnInfo {
   name: string
   type: string
@@ -152,6 +169,68 @@ export interface TableRef {
   /** 스키마가 없는 DB(SQLite·MySQL)는 '' */
   schema: string
   table: string
+}
+
+// ───────── 표 설계 ─────────
+
+export type FkAction = 'NO ACTION' | 'RESTRICT' | 'CASCADE' | 'SET NULL' | 'SET DEFAULT'
+export const FK_ACTIONS: readonly FkAction[] = ['NO ACTION', 'RESTRICT', 'CASCADE', 'SET NULL', 'SET DEFAULT']
+
+/** orig: 원래 이름 (새로 넣은 것은 null) — 원래 설계와 비교해 ALTER 문을 만든다 */
+export interface DesignColumn {
+  name: string
+  type: string
+  nullable: boolean
+  /** 기본값 SQL 식 ('' = 없음). 글자는 따옴표까지: 'abc' */
+  default: string
+  autoIncrement: boolean
+  comment: string
+  /** 계산 열: 설계 화면에서 고칠 수 없음 */
+  generated: boolean
+  orig: string | null
+  /** MySQL: 열 정렬 규칙(표 기본과 다를 때)·ON UPDATE 식 — 다시 쓸 때 잃지 않게 */
+  collation?: string
+  onUpdate?: string
+}
+
+export interface DesignIndex {
+  name: string
+  columns: string[]
+  unique: boolean
+  orig: string | null
+  /** UNIQUE 제약(인덱스가 아니라 제약으로 지운다: PostgreSQL·SQL Server) */
+  constraint?: boolean
+  /** 원래 CREATE INDEX 문 (식·조건 인덱스를 표를 다시 만들 때 그대로 살린다: SQLite) */
+  sql?: string
+}
+
+export interface DesignForeignKey {
+  name: string
+  columns: string[]
+  /** 참조 표의 스키마 (MySQL은 DB, SQLite는 '') */
+  refSchema: string
+  refTable: string
+  refColumns: string[]
+  onDelete: FkAction
+  onUpdate: FkAction
+  orig: string | null
+}
+
+export interface TableDesign {
+  name: string
+  comment: string
+  columns: DesignColumn[]
+  /** 기본 키 열 (순서대로) */
+  primaryKey: string[]
+  /** 기본 키 제약 이름 ('' = 이름 없음·DB가 정함) */
+  pkName: string
+  indexes: DesignIndex[]
+  foreignKeys: DesignForeignKey[]
+  /** 설계 화면이 다루지 않는 설정(SQLite CHECK·COLLATE 등) — 있으면 표를 다시 만들어야 하는 바뀜은 막는다 */
+  unsupported: string[]
+  /** SQLite: 표를 다시 만들 때 살릴 것 — 닫는 괄호 뒤 옵션(WITHOUT ROWID·STRICT), 트리거 CREATE 문 */
+  options?: string
+  triggers?: string[]
 }
 
 // ───────── 표 데이터 보기·고치기 ─────────
@@ -273,6 +352,41 @@ export interface SqlFileResult {
   ms: number
 }
 
+// ───────── 세션 관리자 ─────────
+
+/** 서버에 붙어 있는 연결 하나 */
+export interface ServerSession {
+  id: string
+  user: string
+  db: string
+  host: string
+  app: string
+  /** 실행 중·쉬는 중 등 서버가 주는 글자 */
+  state: string
+  /** 지금 상태로 지난 초 (모르면 null) */
+  seconds: number | null
+  query: string
+  /** 목록을 읽은 이 연결 */
+  own: boolean
+}
+
+// ───────── SQL 스크립트 파일 ─────────
+
+export interface SqlFile {
+  path: string
+  name: string
+  text: string
+}
+
+export interface ScriptEntry {
+  path: string
+  name: string
+  /** 스크립트 폴더 안이면 그 안의 상대 폴더('' = 맨 위), 바깥 파일(최근 연 파일)이면 null */
+  folder: string | null
+  mtime: number
+  size: number
+}
+
 // ───────── 실행 기록·설정·업데이트 ─────────
 
 export interface HistoryEntry {
@@ -300,6 +414,8 @@ export interface AppSettings {
   editorFontSize: number
   /** WHERE 없는 UPDATE·DELETE는 실행 전에 묻기 */
   confirmDangerous: boolean
+  /** 쿼리 변수(:이름, ${이름})가 있으면 실행 전에 값 묻기 */
+  queryParams: boolean
 }
 
 export interface UpdateStatus {
@@ -324,6 +440,11 @@ export interface Api {
   deleteConnection(id: string): Promise<void>
   duplicateConnection(id: string): Promise<ConnectionInfo>
   moveConnection(id: string, toIndex: number): Promise<void>
+  /** 접속을 폴더로 묶기 ('' = 폴더에서 빼기). 연결은 끊지 않는다 */
+  setConnectionFolder(ids: string[], folder: string): Promise<void>
+  /** 접속 목록을 JSON 파일로 (비밀번호 빼고) · 가져오기 (새 접속으로 더함). 고르는 창을 닫으면 null */
+  exportConnections(): Promise<number | null>
+  importConnections(): Promise<number | null>
   testConnection(config: ConnectionConfig, secrets: SecretsInput): Promise<TestResult>
   connect(id: string, prompt: SecretsInput | null): Promise<ConnectResult>
   disconnect(id: string): Promise<void>
@@ -341,6 +462,17 @@ export interface Api {
   ddl(connId: string, ref: TableRef, kind: ObjectKind): Promise<string>
   /** 자동 완성용: 표 이름 → 열 이름들 */
   completion(connId: string, db: string, schema: string): Promise<Record<string, string[]>>
+  /** 프로시저·함수·트리거·시퀀스·이벤트 */
+  extraObjects(connId: string, db: string, schema: string): Promise<ExtraObject[]>
+  /** 개체 원본 (CREATE 문) */
+  objectSource(connId: string, db: string, schema: string, kind: ExtraKind, id: string): Promise<string>
+  /** 세션 관리자: 서버의 연결 목록, 쿼리 취소(queryOnly) 또는 연결 끊기 */
+  serverSessions(connId: string): Promise<ServerSession[]>
+  killSession(connId: string, sessionId: string, queryOnly: boolean): Promise<void>
+  /** 표 설계 화면용: 열·기본 키·인덱스·외래 키 */
+  tableDesign(connId: string, ref: TableRef): Promise<TableDesign>
+  /** 구조를 바꾸는 문장들을 차례로 실행 (표 설계·이름 바꾸기·지우기). 오류가 나면 멈추고 되돌리기 시도 */
+  runDdl(connId: string, db: string, schema: string, statements: string[]): Promise<void>
 
   // SQL 편집기 (탭마다 DB 연결 하나: tabKey는 화면이 정한 탭 이름)
   /** manual = 수동 커밋 (커밋·롤백 전까지 트랜잭션 안) */
@@ -376,6 +508,14 @@ export interface Api {
   /** .sql 파일을 문장마다 차례로 실행 (오류 나면 멈춤). tabKey로 취소 */
   runSqlFile(connId: string, tabKey: string, db: string, schema: string, path: string): Promise<SqlFileResult>
   previewCsv(path: string, o: CsvReadOptions): Promise<CsvPreview>
+  /** SQL 스크립트 파일: 열기(고르는 창) · 다시 읽기 · 저장(path가 null이면 다른 이름으로) · 목록(스크립트 폴더 + 최근 파일) */
+  openSqlFile(): Promise<SqlFile | null>
+  readSqlFile(path: string): Promise<SqlFile>
+  saveSqlFile(path: string | null, text: string, defaultName: string): Promise<SqlFile | null>
+  listScripts(): Promise<{ dir: string; files: ScriptEntry[] }>
+  forgetScript(path: string): Promise<void>
+  /** 파일을 Windows 탐색기에서 보기 (null = 스크립트 폴더 열기) */
+  revealScript(path: string | null): Promise<void>
   importCsv(connId: string, ref: TableRef, path: string, o: ImportOptions): Promise<number>
 
   // 앱
@@ -390,12 +530,13 @@ export interface Api {
 }
 
 export const API_METHODS = [
-  'listConnections', 'saveConnection', 'deleteConnection', 'duplicateConnection', 'moveConnection', 'testConnection', 'connect',
+  'listConnections', 'saveConnection', 'deleteConnection', 'duplicateConnection', 'moveConnection', 'setConnectionFolder', 'exportConnections', 'importConnections', 'testConnection', 'connect',
   'disconnect', 'connectedIds', 'pickSqliteFile', 'pickKeyFile', 'forgetHostKey',
-  'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion',
+  'databases', 'schemas', 'objects', 'columns', 'indexes', 'ddl', 'completion', 'extraObjects', 'objectSource', 'serverSessions', 'killSession', 'tableDesign', 'runDdl',
   'runSql', 'cancelSql', 'commitTx', 'rollbackTx', 'explain', 'foreignKeys', 'cellValue', 'saveCellValue', 'closeSession', 'history', 'clearHistory',
   'tableData', 'countRows', 'applyChanges',
   'saveCsv', 'exportQueryCsv', 'exportTableCsv', 'pickCsv', 'previewCsv', 'importCsv', 'exportDump', 'pickSqlFile', 'runSqlFile',
+  'openSqlFile', 'readSqlFile', 'saveSqlFile', 'listScripts', 'forgetScript', 'revealScript',
   'settings', 'saveSettings', 'appInfo', 'copyText', 'updateStatus', 'checkForUpdates', 'installUpdate', 'openUrl',
 ] as const satisfies readonly (keyof Api)[]
 
@@ -422,5 +563,6 @@ export function newConnection(driver: DriverKind = 'postgres'): ConnectionConfig
     ssh: { enabled: false, host: '', port: 22, user: '', auth: 'password', keyFile: '' },
     production: false,
     readOnly: false,
+    folder: '',
   }
 }

@@ -200,6 +200,7 @@ export function checkConfig(v: unknown): ConnectionConfig {
     showSystem: o.showSystem === true,
     production: o.production === true,
     readOnly: o.readOnly === true,
+    folder: checkText(o.folder ?? '', 100).trim(),
     ssh: {
       enabled: ssh.enabled === true,
       host: checkText(ssh.host ?? '', 255).trim(),
