@@ -1,7 +1,7 @@
 {
   "name": "dboard",
   "productName": "DBoard",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "DB 관리 도구",
   "private": true,
   "main": "dist/main/main.cjs",
